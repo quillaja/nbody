@@ -20,7 +20,8 @@ func main() {
 	years := flag.Int("y", 1, "number of years to simulate")
 	flag.Parse()
 
-	ch := make(chan frameJob, 8)
+	// setup image output workers
+	ch := make(chan *frameJob, 8)
 	workers := 4
 	wg := sync.WaitGroup{}
 	wg.Add(workers)
@@ -28,17 +29,21 @@ func main() {
 		go frameOutput(&wg, ch)
 	}
 
+	// simulation parameters
 	const dt = (60 * 60)       // 1 hour step
-	steps := *years * 365 * 24 // year total simulation time
+	steps := *years * 365 * 24 // years total simulation time
 	bodies := makebodies(*numbodies)
 
-	fmt.Printf("bodies: %d\nstep: %d sec\ntotal steps: %d\nsimulation time: %d sec\n",
-		len(bodies), dt, steps, dt*steps)
+	fmt.Printf("bodies: %d\nstep: %d sec\ntotal steps: %d\nsimulation time: %.1f days\n",
+		len(bodies),
+		dt,
+		steps,
+		(time.Duration(dt*steps)*time.Second).Hours()/24)
 
 	start := time.Now()
 
 	for frame := 0; frame < steps; frame++ {
-		// n^2 gravity
+		// O(n^2) gravity
 		for i := 0; i < len(bodies)-1; i++ {
 			for j := i + 1; j < len(bodies); j++ {
 				gravity(&bodies[i], &bodies[j])
@@ -50,21 +55,19 @@ func main() {
 			bodies[i].update(dt)
 		}
 
-		// output frames
-		// if frame%2 == 0 {
-		ch <- frameJob{
+		// enque bodies for image output
+		ch <- &frameJob{
 			frame:  frame,
 			bodies: bodies,
 		}
-		// }
 
 		// progress
 		avgTimePerFrame := time.Since(start).Milliseconds() / int64(frame+1)
-		estTimeLeft := avgTimePerFrame * int64(steps-frame)
-		fmt.Printf("%.1f%% %dms/step %d sec remaining           \r",
+		estTimeLeft := time.Duration(avgTimePerFrame*int64(steps-frame)) * time.Millisecond
+		fmt.Printf("%.1f%%, %dms/step, %s remaining           \r",
 			100*float64(frame)/float64(steps),
 			avgTimePerFrame,
-			estTimeLeft/1000,
+			estTimeLeft.Truncate(time.Second),
 		)
 	}
 	close(ch)
@@ -76,11 +79,18 @@ func main() {
 func makebodies(n int) []body {
 	bodies := make([]body, n)
 	for i := range bodies {
-		// bodies[i] = &body{}
-		bodies[i].mass = rand.NormFloat64() + 1e4
+		m := rand.NormFloat64() + 1e4
+		if m < 100 {
+			m = 1e4
+		}
+
+		bodies[i].mass = m
 		bodies[i].x = rand.NormFloat64() * 1e3
 		bodies[i].y = rand.NormFloat64() * 1e3
 		bodies[i].z = rand.NormFloat64() * 1e3
+		// bodies[i].vx = rand.NormFloat64() * 0.25
+		// bodies[i].vy = rand.NormFloat64() * 0.25
+		// bodies[i].vz = rand.NormFloat64() * 0.25
 	}
 
 	return bodies
@@ -88,7 +98,7 @@ func makebodies(n int) []body {
 
 type body struct {
 	mass       float64 // kg
-	x, y, z    float64
+	x, y, z    float64 // m
 	vx, vy, vz float64 // m/s
 	fx, fy, fz float64 // accumulated force
 }
@@ -151,14 +161,17 @@ type frameJob struct {
 	bodies []body
 }
 
-func frameOutput(wg *sync.WaitGroup, ch chan frameJob) {
+func frameOutput(wg *sync.WaitGroup, ch chan *frameJob) {
 
 	for job := range ch {
-		film := image.NewRGBA(image.Rect(0, 0, 1000, 1000))
+		film := image.NewRGBA(image.Rect(0, 0, 1920, 1080))
 		draw.Draw(film, film.Bounds(), image.NewUniform(color.Black), image.ZP, draw.Src) // fill black
 
 		for i := 0; i < len(job.bodies); i++ {
-			film.Set(int(job.bodies[i].x/4)+500, int(job.bodies[i].y/4)+500, color.White)
+			film.Set(
+				int(job.bodies[i].x/4)+(film.Bounds().Dx()/2),
+				int(job.bodies[i].y/4)+(film.Bounds().Dy()/2),
+				color.White)
 		}
 
 		file, err := os.Create(fmt.Sprintf("img/%010d.png", job.frame))
