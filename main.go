@@ -59,7 +59,13 @@ func main() {
 		// }
 
 		// progress
-		fmt.Printf("%.1f%% %dms/step           \r", 100*float64(frame)/float64(steps), time.Since(start).Milliseconds()/int64(frame+1))
+		avgTimePerFrame := time.Since(start).Milliseconds() / int64(frame+1)
+		estTimeLeft := avgTimePerFrame * int64(steps-frame)
+		fmt.Printf("%.1f%% %dms/step %d sec remaining           \r",
+			100*float64(frame)/float64(steps),
+			avgTimePerFrame,
+			estTimeLeft/1000,
+		)
 	}
 	close(ch)
 
