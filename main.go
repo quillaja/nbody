@@ -48,27 +48,50 @@ func main() {
 	for frame := 0; frame < steps; frame++ {
 		// O(n^2) gravity
 		for i := 0; i < len(bodies)-1; i++ {
+			if bodies[i] == nil {
+				continue
+			}
+
 			for j := i + 1; j < len(bodies); j++ {
-				gravity(&bodies[i], &bodies[j])
+				if bodies[j] == nil {
+					continue
+				}
+
+				r := dist(bodies[i], bodies[j])
+				if r < 4.0 {
+					*bodies[i] = combine(bodies[i], bodies[j])
+					bodies[j] = nil // "delete" other body
+				} else {
+					gravity(r, bodies[i], bodies[j])
+				}
 			}
 		}
 
 		// update positions/velocities
 		for i := 0; i < len(bodies); i++ {
-			bodies[i].update(dt)
+			if bodies[i] != nil {
+				bodies[i].update(dt)
+			}
 		}
 
 		// enque bodies for image output
+		bcopy := make([]body, 0, len(bodies))
+		for i := 0; i < len(bodies); i++ {
+			if bodies[i] != nil {
+				bcopy = append(bcopy, *bodies[i])
+			}
+		}
 		ch <- &frameJob{
 			frame:  frame,
-			bodies: bodies,
+			bodies: bcopy,
 		}
 
 		// progress
 		avgTimePerFrame := time.Since(start).Milliseconds() / int64(frame+1)
 		estTimeLeft := time.Duration(avgTimePerFrame*int64(steps-frame)) * time.Millisecond
-		fmt.Printf("%.1f%%, %dms/step, %s remaining           \r",
+		fmt.Printf("%.1f%%, %d bodies, %dms/step, %s remaining           \r",
 			100*float64(frame)/float64(steps),
+			len(bcopy),
 			avgTimePerFrame,
 			estTimeLeft.Truncate(time.Second),
 		)
@@ -76,11 +99,17 @@ func main() {
 	close(ch)
 
 	wg.Wait()
-	fmt.Println("\nDone")
+	fmt.Printf("\nDone. Took %s\n", time.Since(start).Truncate(time.Second))
 }
 
-func makebodies(n int, centers [][3]float64) []body {
-	bodies := make([]body, n)
+/*
+
+physics section
+
+*/
+
+func makebodies(n int, centers [][3]float64) []*body {
+	bodies := make([]*body, n)
 	for i := range bodies {
 		m := rand.NormFloat64()*4 + 1e4
 		if m < 100 {
@@ -89,6 +118,7 @@ func makebodies(n int, centers [][3]float64) []body {
 
 		center := centers[rand.Intn(len(centers))]
 
+		bodies[i] = &body{}
 		bodies[i].mass = m
 		bodies[i].x = rand.NormFloat64()*500 + center[0]
 		bodies[i].y = rand.NormFloat64()*500 + center[1]
@@ -140,11 +170,11 @@ func dist(a, b *body) float64 {
 //   = 6.67408e-11 m³/(kg·s²)
 const G = 6.67408e-11
 
-func gravity(a, b *body) {
-	r := dist(a, b)
-	if r < 1 {
-		r = 1
-	}
+func gravity(r float64, a, b *body) {
+	// r := dist(a, b)
+	// if r < 1 {
+	// 	r = 1
+	// }
 
 	f := G * (a.mass * b.mass) / (r * r) // magnitude of force
 
@@ -160,6 +190,31 @@ func gravity(a, b *body) {
 	b.fy -= dfy
 	b.fz -= dfz
 }
+
+func inelasticCollision(ma, va, mb, vb float64) (vc float64) {
+	return (ma*va + mb*vb) / (ma + mb)
+}
+
+func combine(a, b *body) body {
+	return body{
+		mass: a.mass + b.mass,
+		x:    a.x,
+		y:    a.y,
+		z:    a.z,
+		vx:   inelasticCollision(a.mass, a.vx, b.mass, b.vx),
+		vy:   inelasticCollision(a.mass, a.vy, b.mass, b.vy),
+		vz:   inelasticCollision(a.mass, a.vz, b.mass, b.vz),
+		fx:   a.fx,
+		fy:   a.fy,
+		fz:   a.fz,
+	}
+}
+
+/*
+
+image output section
+
+*/
 
 type frameJob struct {
 	frame  int
@@ -190,15 +245,20 @@ func frameOutput(wg *sync.WaitGroup, ch chan *frameJob) {
 	wg.Done()
 }
 
-var blue = color.RGBA{128, 128, 255, 255}
-var red = color.RGBA{255, 128, 128, 255}
+var (
+	blue   = color.RGBA{128, 128, 255, 255}
+	yellow = color.RGBA{255, 255, 128, 255}
+	red    = color.RGBA{255, 128, 128, 255}
+)
 
 func c(m float64) color.Color {
 	switch {
+	case m > 18000:
+		return red
+	case m > 10005:
+		return yellow
 	case m < 9995:
 		return blue
-	case m > 10005:
-		return red
 	default:
 		return color.White
 	}
