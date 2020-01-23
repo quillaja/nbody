@@ -32,7 +32,10 @@ func main() {
 	// simulation parameters
 	const dt = (60 * 60)       // 1 hour step
 	steps := *years * 365 * 24 // years total simulation time
-	bodies := makebodies(*numbodies)
+	bodies := makebodies(*numbodies, [][3]float64{
+		{-800, -800, 0},
+		{800, 500, 0},
+	})
 
 	fmt.Printf("bodies: %d\nstep: %d sec\ntotal steps: %d\nsimulation time: %.1f days\n",
 		len(bodies),
@@ -76,18 +79,20 @@ func main() {
 	fmt.Println("\nDone")
 }
 
-func makebodies(n int) []body {
+func makebodies(n int, centers [][3]float64) []body {
 	bodies := make([]body, n)
 	for i := range bodies {
-		m := rand.NormFloat64() + 1e4
+		m := rand.NormFloat64()*4 + 1e4
 		if m < 100 {
 			m = 1e4
 		}
 
+		center := centers[rand.Intn(len(centers))]
+
 		bodies[i].mass = m
-		bodies[i].x = rand.NormFloat64() * 1e3
-		bodies[i].y = rand.NormFloat64() * 1e3
-		bodies[i].z = rand.NormFloat64() * 1e3
+		bodies[i].x = rand.NormFloat64()*500 + center[0]
+		bodies[i].y = rand.NormFloat64()*500 + center[1]
+		bodies[i].z = rand.NormFloat64()*500 + center[2]
 		// bodies[i].vx = rand.NormFloat64() * 0.25
 		// bodies[i].vy = rand.NormFloat64() * 0.25
 		// bodies[i].vz = rand.NormFloat64() * 0.25
@@ -171,7 +176,7 @@ func frameOutput(wg *sync.WaitGroup, ch chan *frameJob) {
 			film.Set(
 				int(job.bodies[i].x/4)+(film.Bounds().Dx()/2),
 				int(job.bodies[i].y/4)+(film.Bounds().Dy()/2),
-				color.White)
+				c(job.bodies[i].mass))
 		}
 
 		file, err := os.Create(fmt.Sprintf("img/%010d.png", job.frame))
@@ -183,4 +188,18 @@ func frameOutput(wg *sync.WaitGroup, ch chan *frameJob) {
 	}
 
 	wg.Done()
+}
+
+var blue = color.RGBA{128, 128, 255, 255}
+var red = color.RGBA{255, 128, 128, 255}
+
+func c(m float64) color.Color {
+	switch {
+	case m < 9995:
+		return blue
+	case m > 10005:
+		return red
+	default:
+		return color.White
+	}
 }
