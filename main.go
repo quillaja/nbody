@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/gob"
 	"flag"
 	"fmt"
 	"image"
@@ -18,6 +19,7 @@ func main() {
 	// rand.Seed(time.Now().UnixNano())
 	numbodies := flag.Int("n", 10, "number of bodies")
 	years := flag.Float64("y", 1, "number of years to simulate")
+	stateFilename := flag.String("state", "", "simulation state to load")
 	flag.Parse()
 
 	// setup image output workers
@@ -36,20 +38,30 @@ func main() {
 	// bodies := solarsystem()
 	bodies := makebodies(*numbodies, []body{
 		// uses body.f to generate initial velocities of child bodies.
-		{mass: 1e10, x: 0, y: 0, z: 0, fz: 1},
+		{Mass: 1e10, X: 0, Y: 0, Z: 0, fz: 1},
 		// {mass: 1e10, x: -2000, y: -2000, z: 0, fz: 1},
 		// {mass: 1e10, x: 2000, y: 1800, z: 0, fy: -1},
 	})
 
+	// import data if available and update necessary simulation state
+	var lastFrame *frameJob = &frameJob{}
+	startFrame := 0
+	if *stateFilename != "" {
+		lastFrame = importFrameData(*stateFilename)
+		overwriteBodies(&bodies, lastFrame.Bodies)
+		startFrame = lastFrame.Frame
+		frames += startFrame
+	}
+
 	fmt.Printf("bodies: %d\nstep: %d sec\nframes: %d\nsimulation time: %.1f days\n",
 		len(bodies),
 		dt,
-		frames,
-		(time.Duration(dt*frames*iterPerFrame)*time.Second).Hours()/24)
+		frames-startFrame,
+		(time.Duration(dt*iterPerFrame*(frames-startFrame))*time.Second).Hours()/24)
 
 	start := time.Now()
 
-	for frame := 0; frame < frames; frame++ {
+	for frame := startFrame; frame < frames; frame++ {
 		// enque bodies for image output
 		bcopy := make([]body, 0, len(bodies))
 		for i := 0; i < len(bodies); i++ {
@@ -57,10 +69,11 @@ func main() {
 				bcopy = append(bcopy, *bodies[i])
 			}
 		}
-		ch <- &frameJob{
-			frame:  frame,
-			bodies: bcopy,
+		lastFrame = &frameJob{
+			Frame:  frame,
+			Bodies: bcopy,
 		}
+		ch <- lastFrame
 
 		for iter := 0; iter < iterPerFrame; iter++ {
 			// O(n^2) gravity
@@ -99,7 +112,7 @@ func main() {
 		}
 
 		// progress
-		avgTimePerFrame := time.Since(start).Milliseconds() / int64(frame+1)
+		avgTimePerFrame := time.Since(start).Milliseconds() / int64(frame-startFrame+1)
 		estTimeLeft := time.Duration(avgTimePerFrame*int64(frames-frame)) * time.Millisecond
 		fmt.Printf("%.1f%%, %d bodies, %dms/frame, %s remaining           \r",
 			100*float64(frame)/float64(frames),
@@ -112,6 +125,9 @@ func main() {
 
 	wg.Wait()
 	fmt.Printf("\nDone. Took %s\n", time.Since(start).Truncate(time.Second))
+
+	// export final state of simulation
+	exportFrameData(lastFrame)
 }
 
 /*
@@ -136,16 +152,16 @@ func makebodies(n int, cores []body) []*body {
 		}
 
 		bodies[i] = &body{}
-		bodies[i].mass = m
-		bodies[i].x = rand.NormFloat64()*(1000*(1-math.Abs(core.fx))+100*math.Abs(core.fx)) + core.x
-		bodies[i].y = rand.NormFloat64()*(1000*(1-math.Abs(core.fy))+100*math.Abs(core.fy)) + core.y
-		bodies[i].z = rand.NormFloat64()*(1000*(1-math.Abs(core.fz))+100*math.Abs(core.fz)) + core.z
+		bodies[i].Mass = m
+		bodies[i].X = rand.NormFloat64()*(1000*(1-math.Abs(core.fx))+100*math.Abs(core.fx)) + core.X
+		bodies[i].Y = rand.NormFloat64()*(1000*(1-math.Abs(core.fy))+100*math.Abs(core.fy)) + core.Y
+		bodies[i].Z = rand.NormFloat64()*(1000*(1-math.Abs(core.fz))+100*math.Abs(core.fz)) + core.Z
 
 		if nc > 0 {
 			// apply initial orbital velocity around center point
 			// in a direction perpendicular to the body-center vector and
 			// the axis of rotation in core.f.
-			dx, dy, dz := core.x-bodies[i].x, core.y-bodies[i].y, core.z-bodies[i].z
+			dx, dy, dz := core.X-bodies[i].X, core.Y-bodies[i].Y, core.Z-bodies[i].Z
 			d := math.Sqrt(dx*dx + dy*dy + dz*dz)
 			if d == 0 {
 				d = 1
@@ -156,10 +172,10 @@ func makebodies(n int, cores []body) []*body {
 			dx, dy, dz = cross(dx, dy, dz, core.fx, core.fy, core.fz)
 			core.fx, core.fy, core.fz = 0, 0, 0 // re-zero core.f
 
-			v := math.Sqrt(G * core.mass / d)
-			bodies[i].vx = dx * v
-			bodies[i].vy = dy * v
-			bodies[i].vz = dz * v
+			v := math.Sqrt(G * core.Mass / d)
+			bodies[i].Vx = dx * v
+			bodies[i].Vy = dy * v
+			bodies[i].Vz = dz * v
 		}
 	}
 
@@ -180,9 +196,9 @@ func cross(x1, y1, z1, x2, y2, z2 float64) (x3, y3, z3 float64) {
 }
 
 type body struct {
-	mass       float64 // kg
-	x, y, z    float64 // m
-	vx, vy, vz float64 // m/s
+	Mass       float64 // kg
+	X, Y, Z    float64 // m
+	Vx, Vy, Vz float64 // m/s
 	fx, fy, fz float64 // accumulated force
 }
 
@@ -190,14 +206,14 @@ type body struct {
 func (b *body) update(dt float64) {
 	// a = F/m
 	// dv = a*dt
-	b.vx += b.fx / b.mass * dt
-	b.vy += b.fy / b.mass * dt
-	b.vz += b.fz / b.mass * dt
+	b.Vx += b.fx / b.Mass * dt
+	b.Vy += b.fy / b.Mass * dt
+	b.Vz += b.fz / b.Mass * dt
 
 	// dp = v*dt
-	b.x += b.vx * dt
-	b.y += b.vy * dt
-	b.z += b.vz * dt
+	b.X += b.Vx * dt
+	b.Y += b.Vy * dt
+	b.Z += b.Vz * dt
 
 	// clear force
 	b.fx, b.fy, b.fz = 0, 0, 0
@@ -205,14 +221,14 @@ func (b *body) update(dt float64) {
 
 func (b body) String() string {
 	return fmt.Sprintf("m: %.4f\np: [%.2f, %.2f, %.2f]\nv: [%.2f, %.2f, %.2f]\n",
-		b.mass, b.x, b.y, b.z, b.vx, b.vy, b.vz)
+		b.Mass, b.X, b.Y, b.Z, b.Vx, b.Vy, b.Vz)
 }
 
 // distance between two bodies.
 func dist(a, b *body) float64 {
-	dx := b.x - a.x
-	dy := b.y - a.y
-	dz := b.z - a.z
+	dx := b.X - a.X
+	dy := b.Y - a.Y
+	dz := b.Z - a.Z
 	return math.Sqrt(dx*dx + dy*dy + dz*dz)
 }
 
@@ -227,11 +243,11 @@ func gravity(r float64, a, b *body) {
 	// 	r = 1
 	// }
 
-	f := G * (a.mass * b.mass) / (r * r) // magnitude of force
+	f := G * (a.Mass * b.Mass) / (r * r) // magnitude of force
 
-	dfx := (b.x - a.x) / r * f
-	dfy := (b.y - a.y) / r * f
-	dfz := (b.z - a.z) / r * f
+	dfx := (b.X - a.X) / r * f
+	dfy := (b.Y - a.Y) / r * f
+	dfz := (b.Z - a.Z) / r * f
 
 	a.fx += dfx
 	a.fy += dfy
@@ -250,13 +266,13 @@ func inelasticCollision(ma, va, mb, vb float64) (vc float64) {
 // combine a and b into a new body.
 func combine(a, b *body) body {
 	return body{
-		mass: a.mass + b.mass,
-		x:    a.x,
-		y:    a.y,
-		z:    a.z,
-		vx:   inelasticCollision(a.mass, a.vx, b.mass, b.vx),
-		vy:   inelasticCollision(a.mass, a.vy, b.mass, b.vy),
-		vz:   inelasticCollision(a.mass, a.vz, b.mass, b.vz),
+		Mass: a.Mass + b.Mass,
+		X:    a.X,
+		Y:    a.Y,
+		Z:    a.Z,
+		Vx:   inelasticCollision(a.Mass, a.Vx, b.Mass, b.Vx),
+		Vy:   inelasticCollision(a.Mass, a.Vy, b.Mass, b.Vy),
+		Vz:   inelasticCollision(a.Mass, a.Vz, b.Mass, b.Vz),
 		fx:   a.fx, // NOTE: may be inaccurate. maybe add b.f?
 		fy:   a.fy,
 		fz:   a.fz,
@@ -270,8 +286,8 @@ image output section
 */
 
 type frameJob struct {
-	frame  int
-	bodies []body
+	Frame  int
+	Bodies []body
 }
 
 type stat struct {
@@ -303,11 +319,11 @@ func frameOutput(wg *sync.WaitGroup, ch chan *frameJob) {
 
 		// stats := calculateStats(job.bodies)
 
-		for i := 0; i < len(job.bodies); i++ {
+		for i := 0; i < len(job.Bodies); i++ {
 			film.Set(
-				int((job.bodies[i].x /*-stats[0].avg*/)/scale)+width/2,
-				int((job.bodies[i].y /*-stats[1].avg*/)/scale)+height/2,
-				c(job.bodies[i].mass))
+				int((job.Bodies[i].X /*-stats[0].avg*/)/scale)+width/2,
+				int((job.Bodies[i].Y /*-stats[1].avg*/)/scale)+height/2,
+				c(job.Bodies[i].Mass))
 			// film.Set(fit(job.bodies[i], stats, width, height))
 		}
 		// draw center of mass
@@ -316,7 +332,7 @@ func frameOutput(wg *sync.WaitGroup, ch chan *frameJob) {
 		// 	int(stats[1].avg/scale)+height/2,
 		// 	color.RGBA{0, 255, 0, 255})
 
-		file, err := os.Create(fmt.Sprintf("img/%010d.png", job.frame))
+		file, err := os.Create(fmt.Sprintf("img/%010d.png", job.Frame))
 		if err != nil {
 			panic(err)
 		}
@@ -329,9 +345,9 @@ func frameOutput(wg *sync.WaitGroup, ch chan *frameJob) {
 
 // kinda goofy and doesn't work well
 func fit(b body, s [3]stat, width, height float64) (int, int, color.Color) {
-	return int(lerp(b.x, s[0].min, s[0].max) * width),
-		int(lerp(b.y, s[1].min, s[1].max) * height),
-		c(b.mass)
+	return int(lerp(b.X, s[0].min, s[0].max) * width),
+		int(lerp(b.Y, s[1].min, s[1].max) * height),
+		c(b.Mass)
 }
 
 func lerp(x, min, max float64) float64 {
@@ -349,20 +365,20 @@ func calculateStats(bodies []body) (stats [3]stat) {
 
 	summass := 0.0
 	for i := 0; i < n; i++ {
-		summass += bodies[i].mass
+		summass += bodies[i].Mass
 	}
 
 	for i := 0; i < n; i++ {
-		stats[0].avg += bodies[i].x * bodies[i].mass
-		stats[1].avg += bodies[i].y * bodies[i].mass
-		stats[2].avg += bodies[i].z * bodies[i].mass
+		stats[0].avg += bodies[i].X * bodies[i].Mass
+		stats[1].avg += bodies[i].Y * bodies[i].Mass
+		stats[2].avg += bodies[i].Z * bodies[i].Mass
 
-		stats[0].min = math.Min(stats[0].min, bodies[i].x)
-		stats[0].max = math.Max(stats[0].max, bodies[i].x)
-		stats[1].min = math.Min(stats[1].min, bodies[i].y)
-		stats[1].max = math.Max(stats[1].max, bodies[i].y)
-		stats[2].min = math.Min(stats[2].min, bodies[i].z)
-		stats[2].max = math.Max(stats[2].max, bodies[i].z)
+		stats[0].min = math.Min(stats[0].min, bodies[i].X)
+		stats[0].max = math.Max(stats[0].max, bodies[i].X)
+		stats[1].min = math.Min(stats[1].min, bodies[i].Y)
+		stats[1].max = math.Max(stats[1].max, bodies[i].Y)
+		stats[2].min = math.Min(stats[2].min, bodies[i].Z)
+		stats[2].max = math.Max(stats[2].max, bodies[i].Z)
 	}
 
 	stats[0].avg /= summass
@@ -402,59 +418,99 @@ func c(m float64) color.Color {
 	}
 }
 
+func exportFrameData(frame *frameJob) {
+	fname := fmt.Sprintf("%010d.data", frame.Frame)
+	file, err := os.Create(fname)
+	if err != nil {
+		panic(err)
+	}
+	defer file.Close()
+
+	enc := gob.NewEncoder(file)
+	err = enc.Encode(*frame)
+	if err != nil {
+		os.Remove(fname)
+		panic(err)
+	}
+}
+
+func importFrameData(filename string) *frameJob {
+	file, err := os.Open(filename)
+	if err != nil {
+		panic(err)
+	}
+	defer file.Close()
+
+	var frame frameJob
+	dec := gob.NewDecoder(file)
+	err = dec.Decode(&frame)
+	if err != nil {
+		panic(err)
+	}
+
+	return &frame
+}
+
+func overwriteBodies(old *[]*body, new []body) {
+	*old = make([]*body, 0, len(new))
+	for i := 0; i < len(new); i++ {
+		*old = append(*old, &new[i])
+	}
+}
+
 // use physically realistic data to simulate sun and planets of solar system.
 func solarsystem() []*body {
 	return []*body{
 		&body{ //sun
-			mass: 1.9885e30,
+			Mass: 1.9885e30,
 		},
 
 		&body{ //mercury
-			mass: 3.3011e23,
-			x:    (69816900*1e3 + 46001200*1e3) / 2,
-			vy:   47.362 * 1e3,
+			Mass: 3.3011e23,
+			X:    (69816900*1e3 + 46001200*1e3) / 2,
+			Vy:   47.362 * 1e3,
 		},
 
 		&body{ //venus
-			mass: 4.8675e24,
-			x:    -(108939000*1e3 + 107477000*1e3) / 2,
-			vy:   -35.02 * 1e3,
+			Mass: 4.8675e24,
+			X:    -(108939000*1e3 + 107477000*1e3) / 2,
+			Vy:   -35.02 * 1e3,
 		},
 
 		&body{ //earth
-			mass: 5.97237e24,
-			x:    (152100000*1e3 + 147095000*1e3) / 2,
-			vy:   29.78 * 1e3,
+			Mass: 5.97237e24,
+			X:    (152100000*1e3 + 147095000*1e3) / 2,
+			Vy:   29.78 * 1e3,
 		},
 
 		&body{ //mars
-			mass: 6.4171e23,
-			x:    -(249200000*1e3 + 206700000*1e3) / 2,
-			vy:   -24.007 * 1e3,
+			Mass: 6.4171e23,
+			X:    -(249200000*1e3 + 206700000*1e3) / 2,
+			Vy:   -24.007 * 1e3,
 		},
 
 		&body{ //jupiter
-			mass: 1.8982e27,
-			x:    (816.2*1e6*1e3 + 740.52*1e6*1e3) / 2,
-			vy:   13.07 * 1e3,
+			Mass: 1.8982e27,
+			X:    (816.2*1e6*1e3 + 740.52*1e6*1e3) / 2,
+			Vy:   13.07 * 1e3,
 		},
 
 		&body{ //saturn
-			mass: 5.6834e26,
-			x:    -(1514.5*1e6*1e3 + 1352.55*1e6*1e3) / 2,
-			vy:   -9.68 * 1e3,
+			Mass: 5.6834e26,
+			X:    -(1514.5*1e6*1e3 + 1352.55*1e6*1e3) / 2,
+			Vy:   -9.68 * 1e3,
 		},
 
 		&body{ //uranus
-			mass: 8.681e25,
-			x:    (3.008*1e9*1e3 + 2.742*1e9*1e3) / 2,
-			vy:   6.8 * 1e3,
+			Mass: 8.681e25,
+			X:    (3.008*1e9*1e3 + 2.742*1e9*1e3) / 2,
+			Vy:   6.8 * 1e3,
 		},
 
 		&body{ //neptune
-			mass: 1.02413e26,
-			x:    -(4.54e9*1e3 + 4.46e9*1e3) / 2,
-			vy:   -5.43 * 1e3,
+			Mass: 1.02413e26,
+			X:    -(4.54e9*1e3 + 4.46e9*1e3) / 2,
+			Vy:   -5.43 * 1e3,
 		},
 	}
 }
