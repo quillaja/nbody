@@ -53,6 +53,7 @@ func main() {
 		frames += startFrame
 	}
 
+	// print parameters
 	fmt.Printf("bodies: %d\nstep: %d sec\nframes: %d\nsimulation time: %.1f days\n",
 		len(bodies),
 		dt,
@@ -98,16 +99,12 @@ func main() {
 			}
 
 			// update positions/velocities
-			// bz := body{}
 			for i := 0; i < len(bodies); i++ {
 				if bodies[i] == nil {
 					continue
 				}
 
 				bodies[i].update(dt)
-				// if dist(bodies[i], &bz) > 1e4 {
-				// 	bodies[i] = nil
-				// }
 			}
 		}
 
@@ -389,14 +386,15 @@ func calculateStats(bodies []body) (stats [3]stat) {
 }
 
 var (
-	lightgray = color.RGBA{196, 196, 196, 255}
+	lightgray = color.RGBA{192, 192, 192, 255}
 	gray      = color.RGBA{128, 128, 128, 255}
 	darkgray  = color.RGBA{64, 64, 64, 255}
+	red       = color.RGBA{255, 0, 0, 255}
 	green     = color.RGBA{0, 255, 0, 255}
 	blue      = color.RGBA{0, 0, 255, 255}
 	yellow    = color.RGBA{255, 255, 0, 255}
-	red       = color.RGBA{255, 0, 0, 255}
 	purple    = color.RGBA{255, 0, 255, 255}
+	cyan      = color.RGBA{0, 255, 255, 255}
 )
 
 func c(m float64) color.Color {
@@ -417,6 +415,12 @@ func c(m float64) color.Color {
 		return gray
 	}
 }
+
+/*
+
+helpers to save and restore simulation state
+
+*/
 
 func exportFrameData(frame *frameJob) {
 	fname := fmt.Sprintf("%010d.data", frame.Frame)
