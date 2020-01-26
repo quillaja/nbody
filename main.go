@@ -112,7 +112,7 @@ func main() {
 		avgTimePerFrame := time.Since(start).Milliseconds() / int64(frame-startFrame+1)
 		estTimeLeft := time.Duration(avgTimePerFrame*int64(frames-frame)) * time.Millisecond
 		fmt.Printf("%.1f%%, %d bodies, %dms/frame, %s remaining           \r",
-			100*float64(frame)/float64(frames),
+			100*float64(frame-startFrame)/float64(frames-startFrame),
 			len(bcopy),
 			avgTimePerFrame,
 			estTimeLeft.Truncate(time.Second),
