@@ -303,12 +303,8 @@ func frameOutput(wg *sync.WaitGroup, ch chan *frameJob) {
 	// create background image with x and y axis
 	bg := image.NewRGBA(image.Rect(0, 0, width, height))
 	draw.Draw(bg, bg.Bounds(), image.NewUniform(color.Black), image.ZP, draw.Src)
-	for x := 0; x < width; x++ {
-		bg.Set(x, height/2, darkgray)
-	}
-	for y := 0; y < height; y++ {
-		bg.Set(width/2, y, darkgray)
-	}
+	plotline(bg, vdarkgray, 0, height/2, width, height/2)
+	plotline(bg, vdarkgray, width/2, 0, width/2, height)
 
 	for job := range ch {
 		film := image.NewRGBA(image.Rect(0, 0, width, height))
@@ -388,6 +384,7 @@ func calculateStats(bodies []body) (stats [3]stat) {
 var (
 	lightgray = color.RGBA{192, 192, 192, 255}
 	gray      = color.RGBA{128, 128, 128, 255}
+	vdarkgray = color.RGBA{32, 32, 32, 255}
 	darkgray  = color.RGBA{64, 64, 64, 255}
 	red       = color.RGBA{255, 0, 0, 255}
 	green     = color.RGBA{0, 255, 0, 255}
@@ -414,6 +411,47 @@ func c(m float64) color.Color {
 	default:
 		return gray
 	}
+}
+
+// plotline draws a simple line on img from (x0,y0) to (x1,y1).
+//
+// This is basically a copy of a version of Bresenham's line algorithm
+// from https://en.wikipedia.org/wiki/Bresenham%27s_line_algorithm.
+func plotline(img draw.Image, c color.Color, x0, y0, x1, y1 int) {
+	dx := abs(x1 - x0)
+	sx := -1
+	if x0 < x1 {
+		sx = 1
+	}
+	dy := -abs(y1 - y0)
+	sy := -1
+	if y0 < y1 {
+		sy = 1
+	}
+	err := dx + dy
+	for {
+		img.Set(x0, y0, c)
+		if x0 == x1 && y0 == y1 {
+			break
+		}
+		e2 := 2 * err
+		if e2 >= dy {
+			err += dy
+			x0 += sx
+		}
+		if e2 <= dx {
+			err += dx
+			y0 += sy
+		}
+	}
+}
+
+// abs cuz no integer abs function in the Go standard library.
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 /*
