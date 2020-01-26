@@ -4,6 +4,7 @@ import (
 	"encoding/gob"
 	"flag"
 	"fmt"
+	"github.com/go-gl/mathgl/mgl64"
 	"image"
 	"image/color"
 	"image/draw"
@@ -38,9 +39,9 @@ func main() {
 	// bodies := solarsystem()
 	bodies := makebodies(*numbodies, []body{
 		// uses body.f to generate initial velocities of child bodies.
-		{Mass: 1e10, X: 0, Y: 0, Z: 0, fz: 1},
-		// {mass: 1e10, x: -2000, y: -2000, z: 0, fz: 1},
-		// {mass: 1e10, x: 2000, y: 1800, z: 0, fy: -1},
+		// {Mass: 1e10, X: 0, Y: 0, Z: 0, fz: -1},
+		{Mass: 1e10, X: -3000, Y: -2000, Z: 0, fz: 1},
+		{Mass: 1e10, X: 3000, Y: 1800, Z: 0, fy: -1},
 	})
 
 	// import data if available and update necessary simulation state
@@ -89,7 +90,7 @@ func main() {
 					}
 
 					r := dist(bodies[i], bodies[j])
-					if r < 4.0 {
+					if r <= 10.0 {
 						*bodies[i] = combine(bodies[i], bodies[j])
 						bodies[j] = nil // "delete" other body
 					} else {
@@ -293,30 +294,57 @@ type stat struct {
 
 func frameOutput(wg *sync.WaitGroup, ch chan *frameJob) {
 	const (
-		width  = 1920
-		height = 1080
-		scale  = 5 // normal n-body
+		width  = 1920.0
+		height = 1080.0
+		scale  = 6 // normal n-body
 		// scale  = 5e9 // full solar system
 		// scale = 5e8 // inner solar system
 	)
 
-	// create background image with x and y axis
+	view := mgl64.LookAt(500, 500, 1e4, 0, 0, 0, 0, 1, 0) // will cause float div-by-zero error if a point is exactly on the camera's position
+	// proj := mgl64.Perspective(mgl64.DegToRad(90), width/height, 0.1, 100)
+	proj := mgl64.Ortho(-width, width, -height, height, 0.1, 100)
+	vpmat := proj.Mul4(view)
+
+	greybg := image.NewUniform(color.Black)
 	bg := image.NewRGBA(image.Rect(0, 0, width, height))
-	draw.Draw(bg, bg.Bounds(), image.NewUniform(color.Black), image.ZP, draw.Src)
-	plotline(bg, vdarkgray, 0, height/2, width, height/2)
-	plotline(bg, vdarkgray, width/2, 0, width/2, height)
+	// func to redraw bg with correctly rotated axes
+	rotateBG := func(rot mgl64.Mat4) {
+		rvp := vpmat.Mul4(rot)
+		posXAxis := mgl64.TransformCoordinate(mgl64.Vec3{1e2, 0, 0}, rvp)
+		posYAxis := mgl64.TransformCoordinate(mgl64.Vec3{0, 1e2, 0}, rvp)
+		posZAxis := mgl64.TransformCoordinate(mgl64.Vec3{0, 0, 1e2}, rvp)
+		xx, xy := mgl64.GLToScreenCoords(posXAxis.X(), posXAxis.Y(), width, height)
+		yx, yy := mgl64.GLToScreenCoords(posYAxis.X(), posYAxis.Y(), width, height)
+		zx, zy := mgl64.GLToScreenCoords(posZAxis.X(), posZAxis.Y(), width, height)
+
+		// create background image with x,y, and z axes
+		draw.Draw(bg, bg.Bounds(), greybg, image.ZP, draw.Src) //clear
+		plotline(bg, red, width/2, height/2, xx, xy)           // draw
+		plotline(bg, green, width/2, height/2, yx, yy)
+		plotline(bg, blue, width/2, height/2, zx, zy)
+	}
 
 	for job := range ch {
+		rot := mgl64.HomogRotate3DY(mgl64.DegToRad(float64(job.Frame)) / 2)
+
 		film := image.NewRGBA(image.Rect(0, 0, width, height))
+		rotateBG(rot)
 		draw.Draw(film, film.Bounds(), bg, image.ZP, draw.Src) // fill black
 
 		// stats := calculateStats(job.bodies)
-
+		var world, screen mgl64.Vec3
 		for i := 0; i < len(job.Bodies); i++ {
-			film.Set(
-				int((job.Bodies[i].X /*-stats[0].avg*/)/scale)+width/2,
-				int((job.Bodies[i].Y /*-stats[1].avg*/)/scale)+height/2,
-				c(job.Bodies[i].Mass))
+			world[0] = job.Bodies[i].X / scale
+			world[1] = job.Bodies[i].Y / scale
+			world[2] = job.Bodies[i].Z / scale
+			screen = mgl64.TransformCoordinate(world, vpmat.Mul4(rot))
+			x, y := mgl64.GLToScreenCoords(screen.X(), screen.Y(), width, height)
+			film.Set(x, y, c(job.Bodies[i].Mass))
+			// film.Set(
+			// 	int((job.Bodies[i].X /*-stats[0].avg*/)/scale)+width/2,
+			// 	int((job.Bodies[i].Y /*-stats[1].avg*/)/scale)+height/2,
+			// 	c(job.Bodies[i].Mass))
 			// film.Set(fit(job.bodies[i], stats, width, height))
 		}
 		// draw center of mass
