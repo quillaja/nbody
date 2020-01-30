@@ -20,6 +20,7 @@ func main() {
 	// rand.Seed(time.Now().UnixNano())
 	numbodies := flag.Int("n", 10, "number of bodies")
 	years := flag.Float64("y", 1, "number of years to simulate")
+	stateSave := flag.Bool("s", false, "set to save the final simulation state")
 	stateFilename := flag.String("state", "", "simulation state to load")
 	flag.Parse()
 
@@ -39,9 +40,9 @@ func main() {
 	// bodies := solarsystem()
 	bodies := makebodies(*numbodies, []body{
 		// uses body.f to generate initial velocities of child bodies.
-		// {Mass: 1e10, X: 0, Y: 0, Z: 0, fz: -1},
-		{Mass: 1e10, X: -3000, Y: -2000, Z: 0, fz: 1},
-		{Mass: 1e10, X: 3000, Y: 1800, Z: 0, fy: -1},
+		{Mass: 1e10, X: 0, Y: 0, Z: 0, fz: -1},
+		// {Mass: 1e10, X: -8000, Y: -500, Z: 0, fz: 1},
+		// {Mass: 1e10, X: 8000, Y: 500, Z: 0, fy: -1},
 	})
 
 	// import data if available and update necessary simulation state
@@ -63,7 +64,7 @@ func main() {
 
 	start := time.Now()
 
-	for frame := startFrame; frame < frames; frame++ {
+	for frame := startFrame; frame <= frames; frame++ {
 		// enque bodies for image output
 		bcopy := make([]body, 0, len(bodies))
 		for i := 0; i < len(bodies); i++ {
@@ -125,7 +126,9 @@ func main() {
 	fmt.Printf("\nDone. Took %s\n", time.Since(start).Truncate(time.Second))
 
 	// export final state of simulation
-	exportFrameData(lastFrame)
+	if *stateSave {
+		exportFrameData(lastFrame)
+	}
 }
 
 /*
@@ -136,12 +139,13 @@ physics section
 
 // initializes n bodies.
 func makebodies(n int, cores []body) []*body {
+	const orbitalVDampening = 0.9
 	const meanMass = 1e3
 	nc := len(cores)
 	bodies := make([]*body, n+nc)
 
 	for i := nc; i < len(bodies); i++ {
-		m := math.Abs(rand.NormFloat64()*4 + meanMass)
+		m := math.Abs(rand.NormFloat64()*500 + meanMass)
 
 		core := body{}
 		if nc > 0 {
@@ -171,14 +175,15 @@ func makebodies(n int, cores []body) []*body {
 			core.fx, core.fy, core.fz = 0, 0, 0 // re-zero core.f
 
 			v := math.Sqrt(G * core.Mass / d)
-			bodies[i].Vx = dx * v
-			bodies[i].Vy = dy * v
-			bodies[i].Vz = dz * v
+			bodies[i].Vx = dx*v*orbitalVDampening + core.Vx
+			bodies[i].Vy = dy*v*orbitalVDampening + core.Vy
+			bodies[i].Vz = dz*v*orbitalVDampening + core.Vz
 		}
 	}
 
 	// insert centers as bodies in the front of the slice
 	for i := range cores {
+		cores[i].fx, cores[i].fy, cores[i].fz = 0, 0, 0
 		bodies[i] = &cores[i]
 	}
 
@@ -236,11 +241,6 @@ const G = 6.67408e-11
 
 // adds gravitational force to a and b.
 func gravity(r float64, a, b *body) {
-	// r := dist(a, b)
-	// if r < 1 {
-	// 	r = 1
-	// }
-
 	f := G * (a.Mass * b.Mass) / (r * r) // magnitude of force
 
 	dfx := (b.X - a.X) / r * f
@@ -296,62 +296,82 @@ func frameOutput(wg *sync.WaitGroup, ch chan *frameJob) {
 	const (
 		width  = 1920.0
 		height = 1080.0
-		scale  = 6 // normal n-body
+		scale  = 5 // normal n-body
 		// scale  = 5e9 // full solar system
 		// scale = 5e8 // inner solar system
 	)
 
-	view := mgl64.LookAt(500, 500, 1e4, 0, 0, 0, 0, 1, 0) // will cause float div-by-zero error if a point is exactly on the camera's position
-	// proj := mgl64.Perspective(mgl64.DegToRad(90), width/height, 0.1, 100)
-	proj := mgl64.Ortho(-width, width, -height, height, 0.1, 100)
+	view := mgl64.LookAt(500, 500, 1e3, -1000, 0, 0, 0, 1, 0) // will cause float div-by-zero error if a point is exactly on the camera's position
+	proj := mgl64.Perspective(mgl64.DegToRad(90), width/height, 0.1, 100)
+	// proj := mgl64.Ortho(-width, width, -height, height, 0.1, 100)
 	vpmat := proj.Mul4(view)
 
 	greybg := image.NewUniform(color.Black)
 	bg := image.NewRGBA(image.Rect(0, 0, width, height))
 	// func to redraw bg with correctly rotated axes
-	rotateBG := func(rot mgl64.Mat4) {
-		rvp := vpmat.Mul4(rot)
+	rotateBG := func(rvp mgl64.Mat4) {
+		zero := mgl64.TransformCoordinate(mgl64.Vec3{}, rvp)
 		posXAxis := mgl64.TransformCoordinate(mgl64.Vec3{1e2, 0, 0}, rvp)
 		posYAxis := mgl64.TransformCoordinate(mgl64.Vec3{0, 1e2, 0}, rvp)
 		posZAxis := mgl64.TransformCoordinate(mgl64.Vec3{0, 0, 1e2}, rvp)
+		zerox, zeroy := mgl64.GLToScreenCoords(zero.X(), zero.Y(), width, height)
 		xx, xy := mgl64.GLToScreenCoords(posXAxis.X(), posXAxis.Y(), width, height)
 		yx, yy := mgl64.GLToScreenCoords(posYAxis.X(), posYAxis.Y(), width, height)
 		zx, zy := mgl64.GLToScreenCoords(posZAxis.X(), posZAxis.Y(), width, height)
 
 		// create background image with x,y, and z axes
-		draw.Draw(bg, bg.Bounds(), greybg, image.ZP, draw.Src) //clear
-		plotline(bg, red, width/2, height/2, xx, xy)           // draw
-		plotline(bg, green, width/2, height/2, yx, yy)
-		plotline(bg, blue, width/2, height/2, zx, zy)
+		draw.Draw(bg, bg.Bounds(), greybg, image.ZP, draw.Src) // clear
+		plotline(bg, red, zerox, zeroy, xx, xy)                // draw
+		plotline(bg, green, zerox, zeroy, yx, yy)
+		plotline(bg, blue, zerox, zeroy, zx, zy)
 	}
 
 	for job := range ch {
-		rot := mgl64.HomogRotate3DY(mgl64.DegToRad(float64(job.Frame)) / 2)
+
+		// calculate the body's radius as percieved by the (perspective) camera.
+		// (eg large looks small at far distance, small looks large at near distance.)
+		// do this by transforming the body's center and a point on the "surface"
+		// to view/camera space, then finding the distance between those points
+		// radius := func(b body) float64 {
+		// 	// 1600 kg/m^3 for rock
+		// 	r := math.Pow((3*b.Mass)/(4*math.Pi*1600), 1.0/3.0)
+		// 	center := mgl64.Vec3{b.X/scale, b.Y/scale, b.Z/scale}
+		// 	edge := mgl64.Vec3{center.X + r/scale, center.Y, center.Z}
+		// 	center = mgl64.TransformCoordinate(center, vpmat)
+		// 	edge = mgl64.TransformCoordinate(edge, vpmat)
+		// 	return center.Sub(edge).Len()
+		// }
+
+		rot := mgl64.HomogRotate3DY(mgl64.DegToRad(float64(job.Frame)) / 4)
+		rvp := vpmat.Mul4(rot) // final rotated view-projection matrix for this frame
 
 		film := image.NewRGBA(image.Rect(0, 0, width, height))
-		rotateBG(rot)
-		draw.Draw(film, film.Bounds(), bg, image.ZP, draw.Src) // fill black
+		rotateBG(rvp)
+		draw.Draw(film, film.Bounds(), bg, image.ZP, draw.Src) // fill film with background image
 
-		// stats := calculateStats(job.bodies)
-		var world, screen mgl64.Vec3
+		var world, camera, tail mgl64.Vec3
 		for i := 0; i < len(job.Bodies); i++ {
+			// world positions of body and a "tail"
 			world[0] = job.Bodies[i].X / scale
 			world[1] = job.Bodies[i].Y / scale
 			world[2] = job.Bodies[i].Z / scale
-			screen = mgl64.TransformCoordinate(world, vpmat.Mul4(rot))
-			x, y := mgl64.GLToScreenCoords(screen.X(), screen.Y(), width, height)
-			film.Set(x, y, c(job.Bodies[i].Mass))
-			// film.Set(
-			// 	int((job.Bodies[i].X /*-stats[0].avg*/)/scale)+width/2,
-			// 	int((job.Bodies[i].Y /*-stats[1].avg*/)/scale)+height/2,
-			// 	c(job.Bodies[i].Mass))
-			// film.Set(fit(job.bodies[i], stats, width, height))
+			tail[0] = (job.Bodies[i].X - job.Bodies[i].Vx*(60*30)) / scale
+			tail[1] = (job.Bodies[i].Y - job.Bodies[i].Vy*(60*30)) / scale
+			tail[2] = (job.Bodies[i].Z - job.Bodies[i].Vz*(60*30)) / scale
+			// transform points into camera space
+			camera = mgl64.TransformCoordinate(world, rvp)
+			tail = mgl64.TransformCoordinate(tail, rvp)
+			if camera.Z() < 0 {
+				continue // don't draw stuff behind the camera. camera looks down +Z axis in camera space(?)
+			}
+			// get film coords
+			x, y := mgl64.GLToScreenCoords(camera.X(), camera.Y(), width, height)
+			// xt, yt := mgl64.GLToScreenCoords(tail.X(), tail.Y(), width, height)
+			col := c(job.Bodies[i].Mass)
+			// draw
+			film.Set(x, y, col)
+			// plotline(film, col, x, y, xt, yt)
 		}
-		// draw center of mass
-		// film.Set(
-		// 	int(stats[0].avg/scale)+width/2,
-		// 	int(stats[1].avg/scale)+height/2,
-		// 	color.RGBA{0, 255, 0, 255})
 
 		file, err := os.Create(fmt.Sprintf("img/%010d.png", job.Frame))
 		if err != nil {
@@ -364,13 +384,7 @@ func frameOutput(wg *sync.WaitGroup, ch chan *frameJob) {
 	wg.Done()
 }
 
-// kinda goofy and doesn't work well
-func fit(b body, s [3]stat, width, height float64) (int, int, color.Color) {
-	return int(lerp(b.X, s[0].min, s[0].max) * width),
-		int(lerp(b.Y, s[1].min, s[1].max) * height),
-		c(b.Mass)
-}
-
+// lerp x to [0,1]
 func lerp(x, min, max float64) float64 {
 	return (x - min) / (max - min)
 }
@@ -412,8 +426,8 @@ func calculateStats(bodies []body) (stats [3]stat) {
 var (
 	lightgray = color.RGBA{192, 192, 192, 255}
 	gray      = color.RGBA{128, 128, 128, 255}
-	vdarkgray = color.RGBA{32, 32, 32, 255}
 	darkgray  = color.RGBA{64, 64, 64, 255}
+	vdarkgray = color.RGBA{32, 32, 32, 255}
 	red       = color.RGBA{255, 0, 0, 255}
 	green     = color.RGBA{0, 255, 0, 255}
 	blue      = color.RGBA{0, 0, 255, 255}
@@ -480,6 +494,20 @@ func abs(x int) int {
 		return -x
 	}
 	return x
+}
+
+// plotcircle draws a filled circle at (x0,y0) of radius r.
+//
+// This seems to perform just slightly faster than other versions I've tried.
+func plotcircle(img draw.Image, c color.Color, x0, y0, r int) {
+	rsqr := float64(r * r)
+	for y := r; y >= 0; y-- {
+		xright := int(math.Sqrt(rsqr - float64(y*y)))
+		for x := -xright; x <= xright; x++ {
+			img.Set(x0+x, y0+y, c)
+			img.Set(x0+x, y0-y, c)
+		}
+	}
 }
 
 /*
