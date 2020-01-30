@@ -301,7 +301,7 @@ func frameOutput(wg *sync.WaitGroup, ch chan *frameJob) {
 		// scale = 5e8 // inner solar system
 	)
 
-	view := mgl64.LookAt(500, 500, 1e3, -1000, 0, 0, 0, 1, 0) // will cause float div-by-zero error if a point is exactly on the camera's position
+	view := mgl64.LookAt(500, 500, 1e3, 0, 0, 0, 0, 1, 0) // will cause float div-by-zero error if a point is exactly on the camera's position
 	proj := mgl64.Perspective(mgl64.DegToRad(90), width/height, 0.1, 100)
 	// proj := mgl64.Ortho(-width, width, -height, height, 0.1, 100)
 	vpmat := proj.Mul4(view)
