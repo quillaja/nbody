@@ -5,3 +5,5 @@ vid
 nbody
 *.data
 *.zip
+
+*_test.go
