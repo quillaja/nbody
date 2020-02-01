@@ -5,10 +5,11 @@ import (
 	"encoding/gob"
 	"flag"
 	"fmt"
-	"github.com/go-gl/mathgl/mgl64"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/go-gl/mathgl/mgl64"
 )
 
 func main() {
@@ -74,34 +75,36 @@ func main() {
 		ch <- lastFrame
 
 		for iter := 0; iter < iterPerFrame; iter++ {
-			// // O(n^2) gravity
-			// for i := 0; i < len(bodies)-1; i++ {
-			// 	if bodies[i] == nil {
-			// 		continue
-			// 	}
+			if false {
+				// // O(n^2) gravity
+				for i := 0; i < len(bodies)-1; i++ {
+					if bodies[i] == nil {
+						continue
+					}
 
-			// 	for j := i + 1; j < len(bodies); j++ {
-			// 		if bodies[j] == nil {
-			// 			continue
-			// 		}
+					for j := i + 1; j < len(bodies); j++ {
+						if bodies[j] == nil {
+							continue
+						}
 
-			// 		r := dist(bodies[i], bodies[j])
-			// 		if r <= bodies[i].Radius+bodies[j].Radius {
-			// 			*bodies[i] = combine(bodies[i], bodies[j])
-			// 			bodies[j] = nil // "delete" other body
-			// 		} else {
-			// 			gravity(r, bodies[i], bodies[j])
-			// 		}
-			// 	}
-			// }
-
-			// tree gravity O(n*log(n))
-			root := maketree(bodies, nodebound{center: mgl64.Vec3{}, width: mgl64.Vec3{1e9, 1e9, 1e9}})
-			for i := 0; i < len(bodies); i++ {
-				if bodies[i] == nil {
-					continue
+						r := dist(bodies[i], bodies[j])
+						if r <= bodies[i].Radius+bodies[j].Radius {
+							*bodies[i] = combine(bodies[i], bodies[j])
+							bodies[j] = nil // "delete" other body
+						} else {
+							gravity(r, bodies[i], bodies[j])
+						}
+					}
 				}
-				root.gravity(&bodies[i], 0.5) // arbitrary test theta
+			} else {
+				// tree gravity O(n*log(n))
+				root := maketree(bodies, nodebound{center: mgl64.Vec3{}, width: mgl64.Vec3{1e9, 1e9, 1e9}})
+				for i := 0; i < len(bodies); i++ {
+					if bodies[i] == nil {
+						continue
+					}
+					root.gravity(&bodies[i], 0.5) // arbitrary test theta
+				}
 			}
 
 			// update positions/velocities

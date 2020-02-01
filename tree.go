@@ -134,7 +134,7 @@ func (n *node) push(bp **body) bool {
 			n.particle = bp
 			n.centerOfMass = point
 			n.totalMass = b.Mass
-			break
+			return true
 		}
 
 		// 'complex' case: this is an external (leaf) node
@@ -144,7 +144,7 @@ func (n *node) push(bp **body) bool {
 		// into new subnodes (octants), and push
 		// the existing body into appropriate child node
 		n.split()
-		n.children[octantBits(n.bounds.center, point)].push(n.particle)
+		n.children[octantBits(n.bounds.center, n.centerOfMass)].push(n.particle)
 		n.kind = internal // change kind to internal
 		n.particle = nil  // "remove" the body from this node
 
