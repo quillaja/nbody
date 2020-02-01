@@ -103,7 +103,7 @@ func octantBits(midpoint, point mgl64.Vec3) octant {
 type node struct {
 	kind         nodekind
 	children     []*node
-	particle     *body
+	particle     **body
 	totalMass    float64
 	centerOfMass mgl64.Vec3 // com += pos * (mass/(mass+totalmass))
 	bounds       nodebound
@@ -118,15 +118,20 @@ func (n *node) split() {
 }
 
 // place a body in the tree rooted at this node.
-func (n *node) push(b *body) {
+// returns false if the body doesn't belong in this node.
+func (n *node) push(bp **body) bool {
+	b := *bp
 	point := mgl64.Vec3{b.X, b.Y, b.Z}
+	if !n.bounds.contains(point) {
+		return false
+	}
 
 	switch n.kind {
 	case external:
 		// simple case: this is an external (leaf) node
 		// that is currently empty
 		if n.particle == nil {
-			n.particle = b
+			n.particle = bp
 			n.centerOfMass = point
 			n.totalMass = b.Mass
 			break
@@ -148,12 +153,15 @@ func (n *node) push(b *body) {
 		fallthrough
 
 	case internal:
-		// update group mass info
-		n.totalMass += b.Mass
-		n.centerOfMass = n.centerOfMass.Add(point.Mul(b.Mass / n.totalMass))
 		// push body to appropriate child node
-		n.children[octantBits(n.bounds.center, point)].push(b)
+		if n.children[octantBits(n.bounds.center, point)].push(bp) {
+			// update group mass info
+			n.totalMass += b.Mass
+			n.centerOfMass = n.centerOfMass.Add(point.Mul(b.Mass / n.totalMass))
+		}
 	}
+
+	return true
 }
 
 // walk the body through the tree, applying gravitational force to it
@@ -161,11 +169,15 @@ func (n *node) push(b *body) {
 // accuracy dial.
 //
 // TODO: figure out something with body-body collisions.
-func (n *node) gravity(b *body, theta float64) {
-	if n.particle == b {
+func (n *node) gravity(bp **body, theta float64) {
+	if n.totalMass == 0 {
+		return // this is an empty leaf
+	}
+	if n.particle == bp {
 		return // prevent a body interacting with itself
 	}
 
+	b := *bp
 	p := mgl64.Vec3{b.X, b.Y, b.Z}
 	r := n.centerOfMass.Sub(p).Len()
 
@@ -175,9 +187,9 @@ func (n *node) gravity(b *body, theta float64) {
 		if criterion >= theta {
 			// the body is too close to the node CoM to treat the node
 			// as a single distant point.
-			// recuse to children
+			// recurse to children
 			for i := LLL; i <= HHH; i++ {
-				n.children[i].gravity(b, theta)
+				n.children[i].gravity(bp, theta)
 			}
 			return // STOP NOW!!
 		}
@@ -186,6 +198,14 @@ func (n *node) gravity(b *body, theta float64) {
 		fallthrough
 
 	case external:
+		if n.particle != nil {
+			// this external node contains a body which must be tested against for collision
+			// 1. check for sphere-sphere intersection (plus extra margin?)
+			// 2. if intersection then add to list of pairs to combine later.
+			//    forces accumulated on each body during the tree-phase SHOULD cancel
+			//    out later during the combine phase.
+		}
+
 		// calculate and apply gravitational force
 		f := G * (n.totalMass * b.Mass) / (r * r) // magnitude of force
 
@@ -196,10 +216,13 @@ func (n *node) gravity(b *body, theta float64) {
 }
 
 // builds a tree by pushing all bodies into the root
-func maketree(bodies []*body) (root *node) {
-	root = &node{}
+func maketree(bodies []*body, simulationBound nodebound) (root *node) {
+	root = &node{bounds: simulationBound}
 	for i := 0; i < len(bodies); i++ {
-		root.push(bodies[i])
+		if bodies[i] == nil {
+			continue
+		}
+		root.push(&bodies[i])
 	}
 	return
 }

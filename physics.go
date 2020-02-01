@@ -16,6 +16,7 @@ physics section
 func makebodies(n int, cores []body) []*body {
 	const orbitalVDampening = 0.9
 	const meanMass = 1e3
+	const defaultRadius = 1 // given mean mass, this will produce very "nondense" bodies
 	nc := len(cores)
 	bodies := make([]*body, n+nc)
 
@@ -30,6 +31,7 @@ func makebodies(n int, cores []body) []*body {
 
 		bodies[i] = &body{}
 		bodies[i].Mass = m
+		bodies[i].Radius = defaultRadius
 		bodies[i].X = rand.NormFloat64()*(1000*(1-math.Abs(core.fx))+100*math.Abs(core.fx)) + core.X
 		bodies[i].Y = rand.NormFloat64()*(1000*(1-math.Abs(core.fy))+100*math.Abs(core.fy)) + core.Y
 		bodies[i].Z = rand.NormFloat64()*(1000*(1-math.Abs(core.fz))+100*math.Abs(core.fz)) + core.Z
@@ -75,6 +77,7 @@ func cross(x1, y1, z1, x2, y2, z2 float64) (x3, y3, z3 float64) {
 
 type body struct {
 	Mass       float64 // kg
+	Radius     float64 // m
 	X, Y, Z    float64 // m
 	Vx, Vy, Vz float64 // m/s
 	fx, fy, fz float64 // accumulated force
@@ -139,15 +142,31 @@ func inelasticCollision(ma, va, mb, vb float64) (vc float64) {
 // combine a and b into a new body.
 func combine(a, b *body) body {
 	return body{
-		Mass: a.Mass + b.Mass,
-		X:    a.X,
-		Y:    a.Y,
-		Z:    a.Z,
-		Vx:   inelasticCollision(a.Mass, a.Vx, b.Mass, b.Vx),
-		Vy:   inelasticCollision(a.Mass, a.Vy, b.Mass, b.Vy),
-		Vz:   inelasticCollision(a.Mass, a.Vz, b.Mass, b.Vz),
-		fx:   a.fx, // NOTE: may be inaccurate. maybe add b.f?
-		fy:   a.fy,
-		fz:   a.fz,
+		Mass:   a.Mass + b.Mass,
+		Radius: math.Cbrt(a.Radius*a.Radius*a.Radius + b.Radius*b.Radius*b.Radius),
+		X:      a.X,
+		Y:      a.Y,
+		Z:      a.Z,
+		Vx:     inelasticCollision(a.Mass, a.Vx, b.Mass, b.Vx),
+		Vy:     inelasticCollision(a.Mass, a.Vy, b.Mass, b.Vy),
+		Vz:     inelasticCollision(a.Mass, a.Vz, b.Mass, b.Vz),
+		fx:     a.fx, // NOTE: may be inaccurate. maybe add b.f?
+		fy:     a.fy,
+		fz:     a.fz,
 	}
+}
+
+// sphere volume from radius
+func volume(radius float64) float64 {
+	return 4.0 / 3.0 * math.Pi * (radius * radius * radius)
+}
+
+// sphere radius from volume
+func radius(volume float64) float64 {
+	return math.Cbrt((3.0 * volume) / (4.0 * math.Pi))
+}
+
+// sphere radius given a mass and density
+func radiusMassDensity(mass, density float64) float64 {
+	return math.Cbrt((3.0 * mass) / (4.0 * math.Pi * density))
 }
