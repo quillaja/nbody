@@ -49,10 +49,12 @@ func (n nodebound) max() float64 {
 
 // does this bound contain point?
 func (n nodebound) contains(point mgl64.Vec3) bool {
+	// upper side is compared with < because when assigning octants (eg with octantBits())
+	// a point exactly on the parent's midpoint is assigned to the HHH octant.
 	halfwidth := n.width.Mul(0.5)
-	return (n.center[0]-halfwidth[0] <= point[0] && point[0] <= n.center[0]+halfwidth[0]) &&
-		(n.center[1]-halfwidth[1] <= point[1] && point[1] <= n.center[1]+halfwidth[1]) &&
-		(n.center[2]-halfwidth[2] <= point[2] && point[2] <= n.center[2]+halfwidth[2])
+	return (n.center[0]-halfwidth[0] <= point[0] && point[0] < n.center[0]+halfwidth[0]) &&
+		(n.center[1]-halfwidth[1] <= point[1] && point[1] < n.center[1]+halfwidth[1]) &&
+		(n.center[2]-halfwidth[2] <= point[2] && point[2] < n.center[2]+halfwidth[2])
 }
 
 // scale the width of the bounds.
@@ -94,6 +96,7 @@ func octantSimple(midpoint, point mgl64.Vec3) (oct octant) {
 }
 
 // determines which octant (relative to midpoint) in which point belongs.
+// a point on the midpoint goes to the (H)igh octant.
 func octantBits(midpoint, point mgl64.Vec3) octant {
 	return octant((^math.Float64bits(point[0]-midpoint[0]) >> 63) |
 		(^math.Float64bits(point[1]-midpoint[1])>>63)<<1 |
@@ -167,8 +170,6 @@ func (n *node) push(bp **body) bool {
 // walk the body through the tree, applying gravitational force to it
 // from nearby bodies or distant "aggregate" bodies, using theta as the
 // accuracy dial.
-//
-// TODO: figure out something with body-body collisions.
 func (n *node) gravity(bp **body, theta float64, collisions *[][2]**body) {
 	if n.totalMass == 0 {
 		return // this is an empty leaf
@@ -183,15 +184,15 @@ func (n *node) gravity(bp **body, theta float64, collisions *[][2]**body) {
 
 	switch n.kind {
 	case internal:
-		criterion := (n.bounds.max() / 2) / r
-		if criterion >= theta {
+		criterion := n.bounds.max() / r
+		if criterion > theta {
 			// the body is too close to the node CoM to treat the node
 			// as a single distant point.
 			// recurse to children
 			for i := LLL; i <= HHH; i++ {
 				n.children[i].gravity(bp, theta, collisions)
 			}
-			return // STOP NOW!!
+			return
 		}
 		// the body is far enough away from the node CoM.
 		// proceed to calculate gravity on the body due to the node CoM.
@@ -225,7 +226,9 @@ func maketree(bodies []*body, simulationBound nodebound) (root *node) {
 		if bodies[i] == nil {
 			continue
 		}
-		root.push(&(bodies[i]))
+		if !root.push(&(bodies[i])) {
+			bodies[i] = nil // remove out-of-bounds bodies from the simulation
+		}
 	}
 	return
 }

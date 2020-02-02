@@ -19,6 +19,7 @@ func main() {
 	stateSave := flag.Bool("s", false, "set to save the final simulation state")
 	stateFilename := flag.String("state", "", "simulation state to load")
 	tree := flag.Bool("tree", false, "use tree")
+	norender := flag.Bool("norender", false, "do not render frames")
 	flag.Parse()
 
 	// setup image output workers
@@ -60,21 +61,34 @@ func main() {
 		frames-startFrame,
 		(time.Duration(dt*iterPerFrame*(frames-startFrame))*time.Second).Hours()/24)
 
+	const theta = 1
+	simbound := nodebound{center: mgl64.Vec3{}, width: mgl64.Vec3{0x1p20, 0x1p20, 0x1p20}} //mgl64.Vec3{1e6, 1e6, 1e6}}
+	collisions := make([][2]**body, 0, 16)
 	start := time.Now()
 
 	for frame := startFrame; frame <= frames; frame++ {
 		// enque bodies for image output
-		bcopy := make([]body, 0, len(bodies))
-		for i := 0; i < len(bodies); i++ {
-			if bodies[i] != nil {
-				bcopy = append(bcopy, *bodies[i])
+		remainingBodies := 0
+		if *norender {
+			for i := 0; i < len(bodies); i++ {
+				if bodies[i] != nil {
+					remainingBodies++
+				}
 			}
+		} else {
+			bcopy := make([]body, 0, len(bodies))
+			for i := 0; i < len(bodies); i++ {
+				if bodies[i] != nil {
+					bcopy = append(bcopy, *bodies[i])
+				}
+			}
+			remainingBodies = len(bcopy)
+			lastFrame = &frameJob{
+				Frame:  frame,
+				Bodies: bcopy,
+			}
+			ch <- lastFrame
 		}
-		lastFrame = &frameJob{
-			Frame:  frame,
-			Bodies: bcopy,
-		}
-		ch <- lastFrame
 
 		for iter := 0; iter < iterPerFrame; iter++ {
 			if !*tree {
@@ -101,13 +115,13 @@ func main() {
 				}
 			} else {
 				// tree gravity O(n*log(n))
-				root := maketree(bodies, nodebound{center: mgl64.Vec3{}, width: mgl64.Vec3{1e6, 1e6, 1e6}})
-				collisions := make([][2]**body, 0, 4)
+				root := maketree(bodies, simbound)
+				collisions = collisions[:0] // keep underlying memory, reset length
 				for i := 0; i < len(bodies); i++ {
 					if bodies[i] == nil {
 						continue
 					}
-					root.gravity(&(bodies[i]), 0.2, &collisions) // arbitrary test theta
+					root.gravity(&(bodies[i]), theta, &collisions) // arbitrary test theta
 				}
 
 				for i := 0; i < len(collisions); i++ {
@@ -135,7 +149,7 @@ func main() {
 		estTimeLeft := time.Duration(avgTimePerFrame*int64(frames-frame)) * time.Millisecond
 		fmt.Printf("%.1f%%, %d bodies, %dms/frame, %s remaining           \r",
 			100*float64(frame-startFrame)/float64(frames-startFrame),
-			len(bcopy),
+			remainingBodies,
 			avgTimePerFrame,
 			estTimeLeft.Truncate(time.Second),
 		)
