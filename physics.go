@@ -14,7 +14,7 @@ physics section
 
 // initializes n bodies.
 func makebodies(n int, cores []body) []*body {
-	const orbitalVDampening = 0.9
+	const orbitalVDampening = 1.0
 	const meanMass = 1e3
 	const defaultRadius = 1 // given mean mass, this will produce very "nondense" bodies
 	nc := len(cores)
@@ -129,9 +129,9 @@ func gravity(r float64, a, b *body) {
 	a.fy += dfy
 	a.fz += dfz
 
-	b.fx -= dfx
-	b.fy -= dfy
-	b.fz -= dfz
+	// b.fx -= dfx
+	// b.fy -= dfy
+	// b.fz -= dfz
 }
 
 // calculates the final velocity of a and b in a perfectly inelastic collision.
@@ -150,9 +150,9 @@ func combine(a, b *body) body {
 		Vx:     inelasticCollision(a.Mass, a.Vx, b.Mass, b.Vx),
 		Vy:     inelasticCollision(a.Mass, a.Vy, b.Mass, b.Vy),
 		Vz:     inelasticCollision(a.Mass, a.Vz, b.Mass, b.Vz),
-		fx:     a.fx, // NOTE: may be inaccurate. maybe add b.f?
-		fy:     a.fy,
-		fz:     a.fz,
+		fx:     a.fx + b.fx, // NOTE: may be inaccurate. maybe add b.f?
+		fy:     a.fy + b.fy,
+		fz:     a.fz + b.fz,
 	}
 }
 

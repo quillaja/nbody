@@ -169,7 +169,7 @@ func (n *node) push(bp **body) bool {
 // accuracy dial.
 //
 // TODO: figure out something with body-body collisions.
-func (n *node) gravity(bp **body, theta float64) {
+func (n *node) gravity(bp **body, theta float64, collisions *[][2]**body) {
 	if n.totalMass == 0 {
 		return // this is an empty leaf
 	}
@@ -189,7 +189,7 @@ func (n *node) gravity(bp **body, theta float64) {
 			// as a single distant point.
 			// recurse to children
 			for i := LLL; i <= HHH; i++ {
-				n.children[i].gravity(bp, theta)
+				n.children[i].gravity(bp, theta, collisions)
 			}
 			return // STOP NOW!!
 		}
@@ -204,6 +204,9 @@ func (n *node) gravity(bp **body, theta float64) {
 			// 2. if intersection then add to list of pairs to combine later.
 			//    forces accumulated on each body during the tree-phase SHOULD cancel
 			//    out later during the combine phase.
+			if r <= (**n.particle).Radius+b.Radius {
+				*collisions = append(*collisions, [2]**body{n.particle, bp})
+			}
 		}
 
 		// calculate and apply gravitational force
@@ -222,7 +225,7 @@ func maketree(bodies []*body, simulationBound nodebound) (root *node) {
 		if bodies[i] == nil {
 			continue
 		}
-		root.push(&bodies[i])
+		root.push(&(bodies[i]))
 	}
 	return
 }

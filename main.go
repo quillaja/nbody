@@ -18,6 +18,7 @@ func main() {
 	years := flag.Float64("y", 1, "number of years to simulate")
 	stateSave := flag.Bool("s", false, "set to save the final simulation state")
 	stateFilename := flag.String("state", "", "simulation state to load")
+	tree := flag.Bool("tree", false, "use tree")
 	flag.Parse()
 
 	// setup image output workers
@@ -52,7 +53,8 @@ func main() {
 	}
 
 	// print parameters
-	fmt.Printf("bodies: %d\nstep: %d sec\nframes: %d\nsimulation time: %.1f days\n",
+	fmt.Printf("tree: %t\nbodies: %d\nstep: %d sec\nframes: %d\nsimulation time: %.1f days\n",
+		*tree,
 		len(bodies),
 		dt,
 		frames-startFrame,
@@ -75,7 +77,7 @@ func main() {
 		ch <- lastFrame
 
 		for iter := 0; iter < iterPerFrame; iter++ {
-			if false {
+			if !*tree {
 				// // O(n^2) gravity
 				for i := 0; i < len(bodies)-1; i++ {
 					if bodies[i] == nil {
@@ -93,17 +95,28 @@ func main() {
 							bodies[j] = nil // "delete" other body
 						} else {
 							gravity(r, bodies[i], bodies[j])
+							gravity(r, bodies[j], bodies[i])
 						}
 					}
 				}
 			} else {
 				// tree gravity O(n*log(n))
-				root := maketree(bodies, nodebound{center: mgl64.Vec3{}, width: mgl64.Vec3{1e9, 1e9, 1e9}})
+				root := maketree(bodies, nodebound{center: mgl64.Vec3{}, width: mgl64.Vec3{1e6, 1e6, 1e6}})
+				collisions := make([][2]**body, 0, 4)
 				for i := 0; i < len(bodies); i++ {
 					if bodies[i] == nil {
 						continue
 					}
-					root.gravity(&bodies[i], 0.5) // arbitrary test theta
+					root.gravity(&(bodies[i]), 0.2, &collisions) // arbitrary test theta
+				}
+
+				for i := 0; i < len(collisions); i++ {
+					if *collisions[i][0] == nil || *collisions[i][1] == nil {
+						continue
+					}
+
+					**(collisions[i][0]) = combine(*(collisions[i][0]), *(collisions[i][1]))
+					*(collisions[i][1]) = nil
 				}
 			}
 
