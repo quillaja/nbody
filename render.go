@@ -37,7 +37,11 @@ func frameOutput(wg *sync.WaitGroup, ch chan *frameJob) {
 		// scale = 5e8 // inner solar system
 	)
 
-	view := mgl64.LookAt(500, 500, 1e3, 0, 0, 0, 0, 1, 0) // will cause float div-by-zero error if a point is exactly on the camera's position
+	campos := mgl64.Vec3{500, 500, 1e3}.Mul(3)
+	view := mgl64.LookAtV(
+		campos,
+		mgl64.Vec3{0, 0, 0},
+		mgl64.Vec3{0, 1, 0}) // will cause float div-by-zero error if a point is exactly on the camera's position
 	proj := mgl64.Perspective(mgl64.DegToRad(90), width/height, 0.1, 100)
 	// proj := mgl64.Ortho(-width, width, -height, height, 0.1, 100)
 	vpmat := proj.Mul4(view)
@@ -47,9 +51,9 @@ func frameOutput(wg *sync.WaitGroup, ch chan *frameJob) {
 	// func to redraw bg with correctly rotated axes
 	rotateBG := func(rvp mgl64.Mat4) {
 		zero := mgl64.TransformCoordinate(mgl64.Vec3{}, rvp)
-		posXAxis := mgl64.TransformCoordinate(mgl64.Vec3{1e2, 0, 0}, rvp)
-		posYAxis := mgl64.TransformCoordinate(mgl64.Vec3{0, 1e2, 0}, rvp)
-		posZAxis := mgl64.TransformCoordinate(mgl64.Vec3{0, 0, 1e2}, rvp)
+		posXAxis := mgl64.TransformCoordinate(mgl64.Vec3{1e3 / scale, 0, 0}, rvp)
+		posYAxis := mgl64.TransformCoordinate(mgl64.Vec3{0, 1e3 / scale, 0}, rvp)
+		posZAxis := mgl64.TransformCoordinate(mgl64.Vec3{0, 0, 1e3 / scale}, rvp)
 		zerox, zeroy := mgl64.GLToScreenCoords(zero.X(), zero.Y(), width, height)
 		xx, xy := mgl64.GLToScreenCoords(posXAxis.X(), posXAxis.Y(), width, height)
 		yx, yy := mgl64.GLToScreenCoords(posYAxis.X(), posYAxis.Y(), width, height)

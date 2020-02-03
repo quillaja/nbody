@@ -40,9 +40,9 @@ func main() {
 	// bodies := solarsystem()
 	bodies := makebodies(*numbodies, []body{
 		// uses body.f to generate initial velocities of child bodies.
-		{Mass: 1e10, Radius: 1.0, X: 0, Y: 0, Z: 0, fz: -1}, // for this mass, radius must be ~1e6m to be similar to density of the sun, 1410kg/m3
-		// {Mass: 1e10, Radius: 1.0, X: -8000, Y: -500, Z: 0, fz: 1},
-		// {Mass: 1e10, Radius: 1.0, X: 8000, Y: 500, Z: 0, fy: -1},
+		// {Mass: 1e10, Radius: 1.0, X: 0, Y: 0, Z: 0, fz: -1}, // for this mass, radius must be ~1e6m to be similar to density of the sun, 1410kg/m3
+		{Mass: 1e10, Radius: 1.0, X: -5000, Y: -500, Z: -1000, fz: 1, Vx: 0.008, Vz: -0.002},
+		{Mass: 1e10, Radius: 1.0, X: 5000, Y: 500, Z: 900, fy: -1, Vx: -0.005, Vz: 0.003},
 	})
 
 	// import data if available and update necessary simulation state
@@ -122,13 +122,24 @@ func main() {
 			} else {
 				// tree gravity O(n*log(n))
 				// 1) figure out the gravitational forces
+				// make 4 workers, give each worker 1/4 of the bodies
 				root := maketree(bodies, simbound)
-				for i := 0; i < len(bodies); i++ {
-					if bodies[i] == nil {
-						continue
-					}
-					root.gravity(&(bodies[i]), theta) // arbitrary test theta
+				const groups = 4
+				gravgroups := sync.WaitGroup{}
+				groupsize := len(bodies) / 4
+				gravgroups.Add(groups)
+				for g := 0; g < groups; g++ {
+					go func(bgroup []*body) {
+						for i := 0; i < len(bgroup); i++ {
+							if bgroup[i] == nil {
+								continue
+							}
+							root.gravity(&(bgroup[i]), theta) // arbitrary test theta
+						}
+						gravgroups.Done()
+					}(bodies[g*groupsize : (g+1)*groupsize])
 				}
+				gravgroups.Wait()
 
 				// 2) find and process any collisions that take place
 				if !*nocollision {
