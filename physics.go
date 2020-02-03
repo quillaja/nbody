@@ -16,7 +16,7 @@ physics section
 func makebodies(n int, cores []body) []*body {
 	const orbitalVDampening = 1.0
 	const meanMass = 1e3
-	const defaultRadius = 1 // given mean mass, this will produce very "nondense" bodies
+	const defaultRadius = 1 // given mean mass, this will produce very "nondense" bodies (1000kg@1m radius ≈ 238 kg/m³)
 	nc := len(cores)
 	bodies := make([]*body, n+nc)
 
@@ -75,6 +75,14 @@ func cross(x1, y1, z1, x2, y2, z2 float64) (x3, y3, z3 float64) {
 	return
 }
 
+// uniformly (no bias towards center) sample a disk with the given radius.
+func uniformSampleDisk(radius float64) (x, y float64) {
+	r := math.Sqrt(radius * rand.Float64())
+	theta := 2 * math.Pi * rand.Float64()
+	sin, cos := math.Sincos(theta)
+	return r * cos, r * sin
+}
+
 type body struct {
 	Mass       float64 // kg
 	Radius     float64 // m
@@ -117,7 +125,7 @@ func dist(a, b *body) float64 {
 //   = 6.67408e-11 m³/(kg·s²)
 const G = 6.67408e-11
 
-// adds gravitational force to a and b.
+// adds to body a the gravitational force acting on a from b.
 func gravity(r float64, a, b *body) {
 	f := G * (a.Mass * b.Mass) / (r * r) // magnitude of force
 
@@ -128,10 +136,6 @@ func gravity(r float64, a, b *body) {
 	a.fx += dfx
 	a.fy += dfy
 	a.fz += dfz
-
-	// b.fx -= dfx
-	// b.fy -= dfy
-	// b.fz -= dfz
 }
 
 // calculates the final velocity of a and b in a perfectly inelastic collision.
@@ -139,21 +143,16 @@ func inelasticCollision(ma, va, mb, vb float64) (vc float64) {
 	return (ma*va + mb*vb) / (ma + mb)
 }
 
-// combine a and b into a new body.
-func combine(a, b *body) body {
-	return body{
-		Mass:   a.Mass + b.Mass,
-		Radius: math.Cbrt(a.Radius*a.Radius*a.Radius + b.Radius*b.Radius*b.Radius),
-		X:      a.X,
-		Y:      a.Y,
-		Z:      a.Z,
-		Vx:     inelasticCollision(a.Mass, a.Vx, b.Mass, b.Vx),
-		Vy:     inelasticCollision(a.Mass, a.Vy, b.Mass, b.Vy),
-		Vz:     inelasticCollision(a.Mass, a.Vz, b.Mass, b.Vz),
-		fx:     a.fx + b.fx, // NOTE: may be inaccurate. maybe add b.f?
-		fy:     a.fy + b.fy,
-		fz:     a.fz + b.fz,
-	}
+// combine a and b into a.
+func combine(a, b *body) {
+	a.Mass = a.Mass + b.Mass
+	a.Radius = math.Cbrt(a.Radius*a.Radius*a.Radius + b.Radius*b.Radius*b.Radius)
+	a.Vx = inelasticCollision(a.Mass, a.Vx, b.Mass, b.Vx)
+	a.Vy = inelasticCollision(a.Mass, a.Vy, b.Mass, b.Vy)
+	a.Vz = inelasticCollision(a.Mass, a.Vz, b.Mass, b.Vz)
+	a.fx = a.fx + b.fx
+	a.fy = a.fy + b.fy
+	a.fz = a.fz + b.fz
 }
 
 // sphere volume from radius

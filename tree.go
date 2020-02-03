@@ -57,6 +57,20 @@ func (n nodebound) contains(point mgl64.Vec3) bool {
 		(n.center[2]-halfwidth[2] <= point[2] && point[2] < n.center[2]+halfwidth[2])
 }
 
+// does this bound completely contain a sphere at the point with radius r?
+func (n nodebound) containsSphere(point mgl64.Vec3, r float64) bool {
+	w := n.width.Sub(mgl64.Vec3{r, r, r})
+	d := point.Sub(n.center)
+	return math.Abs(d[0]) <= w[0] && math.Abs(d[1]) <= w[1] && math.Abs(d[2]) <= w[2]
+}
+
+// does this bound intersect a sphere at the point with radius r?
+func (n nodebound) intersectSphere(point mgl64.Vec3, r float64) bool {
+	w := n.width.Add(mgl64.Vec3{r, r, r})
+	d := point.Sub(n.center)
+	return math.Abs(d[0]) <= w[0] || math.Abs(d[1]) <= w[1] || math.Abs(d[2]) <= w[2]
+}
+
 // scale the width of the bounds.
 func (n nodebound) scale(s float64) nodebound {
 	n.width = n.width.Mul(s)
@@ -112,14 +126,6 @@ type node struct {
 	bounds       nodebound
 }
 
-// create children nodes with appropriate bounds
-func (n *node) split() {
-	n.children = make([]*node, 8)
-	for i := LLL; i <= HHH; i++ {
-		n.children[i] = &node{bounds: octantBound(n.bounds, i)}
-	}
-}
-
 // place a body in the tree rooted at this node.
 // returns false if the body doesn't belong in this node.
 func (n *node) push(bp **body) bool {
@@ -145,11 +151,16 @@ func (n *node) push(bp **body) bool {
 		//
 		// 1) convert this node into an internal node by splitting this node
 		// into new subnodes (octants), and push
-		// the existing body into appropriate child node
-		n.split()
-		n.children[octantBits(n.bounds.center, n.centerOfMass)].push(n.particle)
-		n.kind = internal // change kind to internal
+		// the existing body into appropriate child node.
+		// actual child nodes are instantiated only when needed.
+		n.children = make([]*node, 8)
+		oct := octantBits(n.bounds.center, n.centerOfMass)
+		if n.children[oct] == nil {
+			n.children[oct] = &node{bounds: octantBound(n.bounds, oct)}
+		}
+		n.children[oct].push(n.particle)
 		n.particle = nil  // "remove" the body from this node
+		n.kind = internal // change kind to internal
 
 		// 2) process the incoming body, which is (conveniently)
 		// exactly the same as for an internal node
@@ -157,7 +168,11 @@ func (n *node) push(bp **body) bool {
 
 	case internal:
 		// push body to appropriate child node
-		if n.children[octantBits(n.bounds.center, point)].push(bp) {
+		oct := octantBits(n.bounds.center, point)
+		if n.children[oct] == nil {
+			n.children[oct] = &node{bounds: octantBound(n.bounds, oct)}
+		}
+		if n.children[oct].push(bp) {
 			// update group mass info
 			n.totalMass += b.Mass
 			n.centerOfMass = n.centerOfMass.Add(point.Mul(b.Mass / n.totalMass))
@@ -170,7 +185,7 @@ func (n *node) push(bp **body) bool {
 // walk the body through the tree, applying gravitational force to it
 // from nearby bodies or distant "aggregate" bodies, using theta as the
 // accuracy dial.
-func (n *node) gravity(bp **body, theta float64, collisions *[][2]**body) {
+func (n *node) gravity(bp **body, theta float64) {
 	if n.totalMass == 0 {
 		return // this is an empty leaf
 	}
@@ -190,7 +205,9 @@ func (n *node) gravity(bp **body, theta float64, collisions *[][2]**body) {
 			// as a single distant point.
 			// recurse to children
 			for i := LLL; i <= HHH; i++ {
-				n.children[i].gravity(bp, theta, collisions)
+				if n.children[i] != nil {
+					n.children[i].gravity(bp, theta)
+				}
 			}
 			return
 		}
@@ -199,23 +216,53 @@ func (n *node) gravity(bp **body, theta float64, collisions *[][2]**body) {
 		fallthrough
 
 	case external:
-		if n.particle != nil {
-			// this external node contains a body which must be tested against for collision
-			// 1. check for sphere-sphere intersection (plus extra margin?)
-			// 2. if intersection then add to list of pairs to combine later.
-			//    forces accumulated on each body during the tree-phase SHOULD cancel
-			//    out later during the combine phase.
-			if r <= (**n.particle).Radius+b.Radius {
-				*collisions = append(*collisions, [2]**body{n.particle, bp})
-			}
-		}
-
 		// calculate and apply gravitational force
 		f := G * (n.totalMass * b.Mass) / (r * r) // magnitude of force
 
 		b.fx += (n.centerOfMass.X() - b.X) / r * f
 		b.fy += (n.centerOfMass.Y() - b.Y) / r * f
 		b.fz += (n.centerOfMass.Z() - b.Z) / r * f
+	}
+}
+
+// walks the body through the tree where the sphere of the body intersects
+// a node's bounds. if the node is an leaf (external) AND has a non-nil body,
+// check that for a collision and enqueue it for later processing if necessary.
+func (n *node) checkCollision(bp **body, collisions *[][2]**body) {
+	if n.particle == bp {
+		return // prevent self-intersection
+	}
+
+	p := mgl64.Vec3{(*bp).X, (*bp).Y, (*bp).Z}
+	if !n.bounds.intersectSphere(p, (*bp).Radius) {
+		return
+	}
+
+	switch n.kind {
+	case external:
+		if n.particle != nil && (*n.particle) != nil {
+			r := dist(*n.particle, *bp)
+			if r <= (*n.particle).Radius+(*bp).Radius {
+				*collisions = append(*collisions, [2]**body{bp, n.particle})
+			}
+		}
+
+	case internal:
+		oct := octantBits(n.bounds.center, p)
+		if n.children[oct] != nil && n.children[oct].bounds.containsSphere(p, (*bp).Radius) {
+			// best case: the octant for the body completely contains
+			// the sphere of the body, and therefore the other 7 child
+			// nodes (and their children!) do not have to be checked.
+			n.children[oct].checkCollision(bp, collisions)
+		} else {
+			// worse case: check all the children of this node.
+			for i := LLL; i <= HHH; i++ {
+				if n.children[i] == nil {
+					continue
+				}
+				n.children[i].checkCollision(bp, collisions)
+			}
+		}
 	}
 }
 

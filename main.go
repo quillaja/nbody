@@ -16,10 +16,12 @@ func main() {
 	// rand.Seed(time.Now().UnixNano())
 	numbodies := flag.Int("n", 10, "number of bodies")
 	years := flag.Float64("y", 1, "number of years to simulate")
-	stateSave := flag.Bool("s", false, "set to save the final simulation state")
 	stateFilename := flag.String("state", "", "simulation state to load")
+
+	stateSave := flag.Bool("save", false, "set to save the final simulation state")
 	tree := flag.Bool("tree", false, "use tree")
 	norender := flag.Bool("norender", false, "do not render frames")
+	nocollision := flag.Bool("nocollision", false, "do not perform collision testing")
 	flag.Parse()
 
 	// setup image output workers
@@ -38,7 +40,7 @@ func main() {
 	// bodies := solarsystem()
 	bodies := makebodies(*numbodies, []body{
 		// uses body.f to generate initial velocities of child bodies.
-		{Mass: 1e10, Radius: 1.0, X: 0, Y: 0, Z: 0, fz: -1},
+		{Mass: 1e10, Radius: 1.0, X: 0, Y: 0, Z: 0, fz: -1}, // for this mass, radius must be ~1e6m to be similar to density of the sun, 1410kg/m3
 		// {Mass: 1e10, Radius: 1.0, X: -8000, Y: -500, Z: 0, fz: 1},
 		// {Mass: 1e10, Radius: 1.0, X: 8000, Y: 500, Z: 0, fy: -1},
 	})
@@ -54,7 +56,9 @@ func main() {
 	}
 
 	// print parameters
-	fmt.Printf("tree: %t\nbodies: %d\nstep: %d sec\nframes: %d\nsimulation time: %.1f days\n",
+	fmt.Printf("render: %t\ncollisions: %t\ntree: %t\nbodies: %d\nstep: %d sec\nframes: %d\nsimulation time: %.1f days\n",
+		!*norender,
+		!*nocollision,
 		*tree,
 		len(bodies),
 		dt,
@@ -62,7 +66,7 @@ func main() {
 		(time.Duration(dt*iterPerFrame*(frames-startFrame))*time.Second).Hours()/24)
 
 	const theta = 1
-	simbound := nodebound{center: mgl64.Vec3{}, width: mgl64.Vec3{0x1p20, 0x1p20, 0x1p20}} //mgl64.Vec3{1e6, 1e6, 1e6}}
+	simbound := nodebound{center: mgl64.Vec3{}, width: mgl64.Vec3{0x1p19, 0x1p19, 0x1p19}} // ~1e6 but in powers of 2 for perfect division into octants
 	collisions := make([][2]**body, 0, 16)
 	start := time.Now()
 
@@ -103,34 +107,45 @@ func main() {
 							continue
 						}
 
+						// 1) apply gravity
 						r := dist(bodies[i], bodies[j])
-						if r <= bodies[i].Radius+bodies[j].Radius {
-							*bodies[i] = combine(bodies[i], bodies[j])
+						gravity(r, bodies[i], bodies[j])
+						gravity(r, bodies[j], bodies[i])
+
+						// 2) resolve collisions
+						if !*nocollision && r <= bodies[i].Radius+bodies[j].Radius {
+							combine(bodies[i], bodies[j])
 							bodies[j] = nil // "delete" other body
-						} else {
-							gravity(r, bodies[i], bodies[j])
-							gravity(r, bodies[j], bodies[i])
 						}
 					}
 				}
 			} else {
 				// tree gravity O(n*log(n))
+				// 1) figure out the gravitational forces
 				root := maketree(bodies, simbound)
-				collisions = collisions[:0] // keep underlying memory, reset length
 				for i := 0; i < len(bodies); i++ {
 					if bodies[i] == nil {
 						continue
 					}
-					root.gravity(&(bodies[i]), theta, &collisions) // arbitrary test theta
+					root.gravity(&(bodies[i]), theta) // arbitrary test theta
 				}
 
-				for i := 0; i < len(collisions); i++ {
-					if *collisions[i][0] == nil || *collisions[i][1] == nil {
-						continue
+				// 2) find and process any collisions that take place
+				if !*nocollision {
+					collisions = collisions[:0] // keep underlying memory, reset length
+					for i := 0; i < len(bodies); i++ {
+						if bodies[i] == nil {
+							continue
+						}
+						root.checkCollision(&bodies[i], &collisions)
 					}
-
-					**(collisions[i][0]) = combine(*(collisions[i][0]), *(collisions[i][1]))
-					*(collisions[i][1]) = nil
+					for i := 0; i < len(collisions); i++ {
+						if *collisions[i][0] == nil || *collisions[i][1] == nil {
+							continue
+						}
+						combine(*(collisions[i][0]), *(collisions[i][1]))
+						*(collisions[i][1]) = nil
+					}
 				}
 			}
 
