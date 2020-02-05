@@ -42,6 +42,20 @@ type nodebound struct {
 	center, width mgl64.Vec3
 }
 
+// return 8 points corresponding to the corners of the bound.
+func (n nodebound) corners() []mgl64.Vec3 {
+	pts := make([]mgl64.Vec3, 8)
+	halfwidth := n.width.Mul(0.5)
+	for i := LLL; i <= HHH; i++ {
+		pts[i] = mgl64.Vec3{
+			n.center[0] + halfwidth[0]*(float64(((i&LLH)>>0)*2)-1.0),
+			n.center[1] + halfwidth[1]*(float64(((i&LHL)>>1)*2)-1.0),
+			n.center[2] + halfwidth[2]*(float64(((i&HLL)>>2)*2)-1.0),
+		}
+	}
+	return pts
+}
+
 // returns the max width among the 3 dimensions.
 func (n nodebound) max() float64 {
 	return math.Max(n.width[0], math.Max(n.width[1], n.width[2]))
