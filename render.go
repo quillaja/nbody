@@ -47,7 +47,7 @@ func frameOutput(wg *sync.WaitGroup, ch chan *frameJob) {
 		campos,
 		mgl64.Vec3{0, 0, 0},
 		mgl64.Vec3{0, 1, 0}) // will cause float div-by-zero error if a point is exactly on the camera's position
-	proj := mgl64.Perspective(mgl64.DegToRad(60), width/height, 0.1, 100)
+	proj := mgl64.Perspective(mgl64.DegToRad(90), width/height, 0.1, 100)
 	// proj := mgl64.Ortho(-width, width, -height, height, 0.1, 100)
 	vp := proj.Mul4(view)
 
@@ -291,7 +291,7 @@ func plotpoint3d(img draw.Image, c color.Color, vp mgl64.Mat4, p mgl64.Vec3) {
 	// p = mgl64.TransformCoordinate(p, vp)
 	t := p.Vec4(1)
 	t = vp.Mul4x1(t)
-	if t[3] < 0 {
+	if t[3] <= 0 {
 		return
 	}
 	t = t.Mul(1 / t[3]) // t in NDC space
@@ -310,64 +310,73 @@ func plotline3d(img draw.Image, c color.Color, vp mgl64.Mat4, p1, p2 mgl64.Vec3)
 	t2 = vp.Mul4x1(t2)
 
 	// fix lines going behind the camera by clipping them to the 3D
-	// point on the W=0.1 plane
-	fix2 := false
+	// point on the W=0 plane
 	switch {
-	case t1[3] <= 0 && t2[3] <= 0:
+	case t1[3] <= 0 && t2[3] <= 0: // both behind W=0. don't do anything
 		return
 
-	case t1[3] < 0: // t1 low, t2 high
-		lerpwto0(&t1, &t2)
-		t2, t1 = t1, t2 // swap so only x2,y2 need be checked later
-		fix2 = true
+	case t1[3] <= 0: // t1 behind W=0, t2 in front
+		clipWto0(&t1, &t2)
 
-	case t2[3] < 0: // t2 low, t1 high
-		lerpwto0(&t2, &t1)
-		fix2 = true
+	case t2[3] <= 0: // t2 behind W=0, t1 in front
+		clipWto0(&t2, &t1)
 	}
 
-	t1 = t1.Mul(1 / t1[3]) // t in NDC space
-	t2 = t2.Mul(1 / t2[3])
+	p1 = t1.Mul(1 / t1[3]).Vec3() // convert t to NDC space
+	p2 = t2.Mul(1 / t2[3]).Vec3()
 
-	x1, y1 := mgl64.GLToScreenCoords(t1.X(), t1.Y(), img.Bounds().Dx(), img.Bounds().Dy())
-	x2, y2 := mgl64.GLToScreenCoords(t2.X(), t2.Y(), img.Bounds().Dx(), img.Bounds().Dy())
-
-	// correct x2,y2 by clipping to the image bounds
-	if fix2 {
-		dx := float64(x1 - x2)
-		dy := float64(y1 - y2)
-		var tx, ty float64
-		switch {
-		case dx == 0:
-			tx = -1
-		case dx < 0: // x2 beyond image right
-			tx = t(float64(img.Bounds().Dx()), float64(x2), float64(x1))
-		case dx > 0: // x2 beyond image left
-			tx = t(0, float64(x2), float64(x1))
-		}
-		switch {
-		case dy == 0:
-			ty = -1
-		case dy < 0: // y2 beyond image bottom
-			ty = t(float64(img.Bounds().Dy()), float64(y2), float64(y1))
-		case dy > 0: // y2 beyond image top
-			ty = t(0, float64(y2), float64(y1))
-		}
-		t := math.Max(tx, ty)
-		x2 += int(t * dx)
-		y2 += int(t * dy)
+	if clip(&p1, &p2) { // use NDC to clip lines to the image bounds
+		return
 	}
+
+	x1, y1 := mgl64.GLToScreenCoords(p1.X(), p1.Y(), img.Bounds().Dx(), img.Bounds().Dy())
+	x2, y2 := mgl64.GLToScreenCoords(p2.X(), p2.Y(), img.Bounds().Dx(), img.Bounds().Dy())
 	plotline(img, c, x1, y1, x2, y2)
 }
 
-func lerpwto0(low, high *mgl64.Vec4) {
-	t := (0.1 - low[3]) / (high[3] - low[3])
-	low[0] += t * (high[0] - low[0])
-	low[1] += t * (high[1] - low[1])
-	low[2] += t * (high[2] - low[2])
-	low[3] = 0.1 //t * (high[3] - low[3])
+func clipWto0(behind, front *mgl64.Vec4) {
+	// t := (0.0 - behind[3]) / (front[3] - behind[3])
+	t := lerp(0, behind[3], front[3])
+	behind[0] += t * (front[0] - behind[0])
+	behind[1] += t * (front[1] - behind[1])
+	behind[2] += t * (front[2] - behind[2])
+	behind[3] = 1
 }
 
-func t(x, low, high float64) float64 {
-	return (x - low) / (high - low)
+// x & y clipping planes in NDC space
+var planes = [4][2]mgl64.Vec3{
+	// {{normal}, {point}}
+	{{1, 0, 0}, {-1, 0, 0}}, // low x
+	{{-1, 0, 0}, {1, 0, 0}}, // high x
+	{{0, 1, 0}, {0, -1, 0}}, // low y
+	{{0, -1, 0}, {0, 1, 0}}, // high y
+}
+
+// will clip p1 and/or p2 to the ±X and ±Y clipping NDC clipping planes.
+// returns true if both p1 and p2 are completely outside of the NDC space
+// (and therefore do no have to be drawn at all).
+func clip(p1, p2 *mgl64.Vec3) (totallyClippedOutOfExistence bool) {
+	for i := range planes {
+		n := planes[i][0]
+		p := planes[i][1]
+		p1behind := p1.Sub(p).Dot(n) < 0
+		p2behind := p2.Sub(p).Dot(n) < 0
+		switch {
+		case p1behind && p2behind:
+			return true
+		case p1behind:
+			dline := p2.Sub(*p1)
+			dplane := p.Sub(*p1)
+			dlinex := dline.Dot(n)   // length of x component of dline
+			dplanex := dplane.Dot(n) // length of x component of dplane
+			*p1 = p1.Add(dline.Mul(dplanex / dlinex))
+		case p2behind:
+			dline := p1.Sub(*p2)
+			dplane := p.Sub(*p2)
+			dlinex := dline.Dot(n)   // length of x component of dline
+			dplanex := dplane.Dot(n) // length of x component of dplane
+			*p2 = p2.Add(dline.Mul(dplanex / dlinex))
+		}
+	}
+	return false
 }
