@@ -15,8 +15,8 @@ physics section
 // initializes n bodies.
 func makebodies(n int, cores []body) []*body {
 	const orbitalVDampening = 1.0
-	const meanMass = 1e3
-	const defaultRadius = 1 // given mean mass, this will produce very "nondense" bodies (1000kg@1m radius ≈ 238 kg/m³)
+	const meanMass = 50e3   //1e3 // 50e3kg@2m =1492 kg/m3; 6e3kg@1m = 1432kg/m3
+	const defaultRadius = 2 // given mean mass, this will produce very "nondense" bodies (1000kg@1m radius ≈ 238 kg/m³)
 	nc := len(cores)
 	bodies := make([]*body, n+nc)
 

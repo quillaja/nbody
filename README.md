@@ -8,7 +8,7 @@ A simple (maybe?) n-body simulator for my own experimentation and enjoyment.
     - [ ] axes grow/shrink in proportion to camera distance (so axes look about the same size from any distance from origin)
     - [ ] creation of color palettes for mass
     - [ ] color/mass "key" in corner of frame. other textual info?
-    - [ ] draw bounding cubes. at least simulation bound, perhaps oct-tree node bounds.
+    - [x] draw bounding cubes. at least simulation bound, perhaps oct-tree node bounds.
 - [ ] better simulation state save/load
 - [ ] better control of simulation params (json file?)
     - [ ] more realistic body masses, positions, etc

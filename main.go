@@ -41,8 +41,8 @@ func main() {
 	bodies := makebodies(*numbodies, []body{
 		// uses body.f to generate initial velocities of child bodies.
 		// {Mass: 1e10, Radius: 1.0, X: 0, Y: 0, Z: 0, fz: -1}, // for this mass, radius must be ~1e6m to be similar to density of the sun, 1410kg/m3
-		{Mass: 1e10, Radius: 1.0, X: -5000, Y: -500, Z: -1000, fz: 1, Vx: 0.008, Vz: -0.002},
-		{Mass: 1e10, Radius: 1.0, X: 5000, Y: 500, Z: 900, fy: -1, Vx: -0.005, Vz: 0.003},
+		{Mass: 1e10, Radius: 1.0, X: -9000, Y: -100, Z: -2000, fy: 1, Vx: 0.004, Vz: -0.001},
+		{Mass: 1e10, Radius: 1.0, X: 9000, Y: 100, Z: 2000, fz: -1, Vx: -0.003, Vz: 0.002},
 	})
 
 	// import data if available and update necessary simulation state
@@ -65,8 +65,10 @@ func main() {
 		frames-startFrame,
 		(time.Duration(dt*iterPerFrame*(frames-startFrame))*time.Second).Hours()/24)
 
-	const theta = 1
-	simbound := nodebound{center: mgl64.Vec3{}, width: mgl64.Vec3{0x1p19, 0x1p19, 0x1p19}} // ~1e6 but in powers of 2 for perfect division into octants
+	const theta = 1 // apparently a "decent" default theta
+	simbound := nodebound{
+		center: mgl64.Vec3{},
+		width:  mgl64.Vec3{0x1p16, 0x1p16, 0x1p16}} // 1p17=65,000*2, 1p20~1e6 but in powers of 2 for perfect division into octants
 	collisions := make([][2]**body, 0, 16)
 	start := time.Now()
 
@@ -134,7 +136,7 @@ func main() {
 							if bgroup[i] == nil {
 								continue
 							}
-							root.gravity(&(bgroup[i]), theta) // arbitrary test theta
+							root.gravity(&(bgroup[i]), theta)
 						}
 						gravgroups.Done()
 					}(bodies[g*groupsize : (g+1)*groupsize])
