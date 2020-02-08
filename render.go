@@ -29,7 +29,7 @@ type stat struct {
 	avg, min, max float64
 }
 
-func frameOutput(wg *sync.WaitGroup, ch chan *frameJob) {
+func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 	const (
 		width               = 1920.0
 		height              = 1080.0

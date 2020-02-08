@@ -30,6 +30,7 @@ func makebodies(n int, cores []body) []*body {
 		}
 
 		bodies[i] = &body{}
+		bodies[i].ID = uint64(i)
 		bodies[i].Mass = m
 		bodies[i].Radius = defaultRadius
 		bodies[i].X = rand.NormFloat64()*(1000*(1-math.Abs(core.fx))+100*math.Abs(core.fx)) + core.X
@@ -49,7 +50,6 @@ func makebodies(n int, cores []body) []*body {
 			dy /= d
 			dz /= d
 			dx, dy, dz = cross(dx, dy, dz, core.fx, core.fy, core.fz)
-			core.fx, core.fy, core.fz = 0, 0, 0 // re-zero core.f
 
 			v := math.Sqrt(G * core.Mass / d)
 			bodies[i].Vx = dx*v*orbitalVDampening + core.Vx
@@ -62,6 +62,7 @@ func makebodies(n int, cores []body) []*body {
 	for i := range cores {
 		cores[i].fx, cores[i].fy, cores[i].fz = 0, 0, 0
 		bodies[i] = &cores[i]
+		bodies[i].ID = uint64(i)
 	}
 
 	return bodies
@@ -84,6 +85,7 @@ func uniformSampleDisk(radius float64) (x, y float64) {
 }
 
 type body struct {
+	ID         uint64
 	Mass       float64 // kg
 	Radius     float64 // m
 	X, Y, Z    float64 // m

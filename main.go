@@ -25,12 +25,15 @@ func main() {
 	flag.Parse()
 
 	// setup image output workers
-	ch := make(chan *frameJob, 8)
-	workers := 4
+	ch := make(chan *frameJob, 32)
+	workers := 1
 	wg := sync.WaitGroup{}
 	wg.Add(workers)
+	// db := opendb("bodies.sqlite")
 	for i := 0; i < workers; i++ {
-		go frameOutput(&wg, ch)
+		// go frameToImages(&wg, ch)
+		// go frameToSqlite(db, &wg, ch)
+		go frameToMemory(&wg, ch)
 	}
 
 	// simulation parameters
@@ -185,6 +188,9 @@ func main() {
 	close(ch)
 
 	wg.Wait()
+	// createIndices(db)
+	// db.Close()
+	writeRenderStoreToDisk("allframes.gob")
 	fmt.Printf("\nDone. Took %s\n", time.Since(start).Truncate(time.Second))
 
 	// export final state of simulation
