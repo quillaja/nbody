@@ -26,14 +26,14 @@ func main() {
 
 	// setup image output workers
 	ch := make(chan *frameJob, 32)
-	workers := 1
+	workers := 4
 	wg := sync.WaitGroup{}
 	wg.Add(workers)
 	// db := opendb("bodies.sqlite")
 	for i := 0; i < workers; i++ {
-		// go frameToImages(&wg, ch)
+		go frameToImages(&wg, ch)
 		// go frameToSqlite(db, &wg, ch)
-		go frameToMemory(&wg, ch)
+		// go frameToMemory(&wg, ch)
 	}
 
 	// simulation parameters
@@ -131,7 +131,7 @@ func main() {
 				root := maketree(bodies, simbound)
 				const groups = 4
 				gravgroups := sync.WaitGroup{}
-				groupsize := len(bodies) / 4
+				groupsize := len(bodies) / groups
 				gravgroups.Add(groups)
 				for g := 0; g < groups; g++ {
 					go func(bgroup []*body) {
@@ -190,7 +190,7 @@ func main() {
 	wg.Wait()
 	// createIndices(db)
 	// db.Close()
-	writeRenderStoreToDisk("allframes.gob")
+	// writeRenderStoreToDisk("allframes.gob")
 	fmt.Printf("\nDone. Took %s\n", time.Since(start).Truncate(time.Second))
 
 	// export final state of simulation

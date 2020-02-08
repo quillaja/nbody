@@ -20,6 +20,10 @@ image output section
 
 */
 
+/*
+88 frames = 1.8mb disk used (for comparison against using DB or gob)
+*/
+
 type frameJob struct {
 	Frame  int
 	Bodies []body
