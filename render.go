@@ -20,7 +20,7 @@ image output section
 */
 
 /*
-88 frames = 1.8mb disk used (for comparison against using DB or gob)
+88 frames = 1.8mb disk used (for comparison against using DB or gob) (~35kb per image)
 */
 
 type frameJob struct {
@@ -30,6 +30,46 @@ type frameJob struct {
 
 type stat struct {
 	avg, min, max float64
+}
+
+type light struct {
+	directional bool
+	intensity   float64
+	pos         mgl64.Vec3
+	color       mgl64.Vec3 // fractional color (RGB in [0,1]
+}
+
+//intensity for p's distance from light, as seen from cam.
+func (l light) li(cam, p mgl64.Vec3) mgl64.Vec3 {
+	if l.directional {
+		frac := fractilum(cam, p, l.pos.Mul(-1))
+		return l.color.Mul(frac) // directional light intensity doesn't decrease with distance
+	}
+	frac := fractilum(cam, p, l.pos.Sub(p).Normalize())
+	return l.color.Mul(l.intensity * frac / l.pos.Sub(p).LenSqr())
+}
+
+// portion of p illuminated from c's location by a light in dir from p . [0,1]
+func fractilum(c, p, dir mgl64.Vec3) float64 {
+	pc := p.Sub(c).Normalize()
+	// dir := l.Sub(p).Normalize()
+	return (pc.Dot(dir) - 1.0) / -2.0 // transform [-1 -> 1, 1 -> 0 ]
+}
+
+func sumLi(lights []light, cam, p mgl64.Vec3) color.Color {
+	var sum mgl64.Vec3
+	for i := range lights {
+		sum = sum.Add(lights[i].li(cam, p))
+	}
+	sum[0] = mgl64.Clamp(sum[0]*255.0, 0.0, 255.0)
+	sum[1] = mgl64.Clamp(sum[1]*255.0, 0.0, 255.0)
+	sum[2] = mgl64.Clamp(sum[2]*255.0, 0.0, 255.0)
+	return color.RGBA{
+		uint8(sum[0]),
+		uint8(sum[1]),
+		uint8(sum[2]),
+		255,
+	}
 }
 
 func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
@@ -43,6 +83,24 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 		// scale = 5e8 // inner solar system
 	)
 
+	const lightIntensity = 1e8 / (4 * math.Pi)
+	lights := make([]light, 5)
+	lights[0] = light{
+		pos:       mgl64.Vec3{axisLength, 0, 0}, // end of x (red) axis
+		color:     mgl64.Vec3{1.0, 0.1, 0.1},
+		intensity: lightIntensity,
+	}
+	lights[1] = light{
+		pos:       mgl64.Vec3{0, axisLength, 0}, // end of Y (green) axis
+		color:     mgl64.Vec3{0.1, 1.0, 0.1},
+		intensity: lightIntensity,
+	}
+	lights[2] = light{
+		pos:       mgl64.Vec3{0, 0, axisLength}, // end of Z (blue) axis
+		color:     mgl64.Vec3{0.1, 0.1, 1.0},
+		intensity: lightIntensity,
+	}
+
 	campos := mgl64.Vec3{1, 1, 5}.
 		Normalize().
 		Mul(camRadiusFromOrigin)
@@ -50,9 +108,18 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 		campos,
 		mgl64.Vec3{0, 0, 0},
 		mgl64.Vec3{0, 1, 0}) // will cause float div-by-zero error if a point is exactly on the camera's position
-	proj := mgl64.Perspective(mgl64.DegToRad(90), width/height, 0.1, 100)
+	proj := mgl64.Perspective(mgl64.DegToRad(30), width/height, 0.1, 100)
 	// proj := mgl64.Ortho(-width, width, -height, height, 0.1, 100)
 	vp := proj.Mul4(view)
+
+	// lights := []light{
+	// 	{
+	// 		directional: true,
+	// 		pos:         mgl64.Vec3{0, 0, 1}, // *from* -z of simulation
+	// 		// pos:       campos.Mul(-1).Normalize(), // from camera
+	// 		color: mgl64.Vec3{1, 1, 1}, // white
+	// 	},
+	// }
 
 	zbuffer := make([]float64, width*height)
 	greybg := image.NewUniform(color.Black)
@@ -102,13 +169,38 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 
 		initZBuffer(zbuffer)
 
-		// sort by low-to-high mass, so "important" bodies are drawn last/on top
+		//sort by low-to-high mass, so "important" bodies are drawn last/on top
 		// sort.Slice(job.Bodies, func(i, j int) bool {
 		// 	return job.Bodies[i].Mass < job.Bodies[j].Mass
 		// })
+		// high-to-low mass
+		// sort.Slice(job.Bodies, func(i, j int) bool {
+		// 	return job.Bodies[i].Mass > job.Bodies[j].Mass
+		// })
 
-		rot := mgl64.HomogRotate3DY(mgl64.DegToRad(float64(job.Frame)) / 4)
+		// red and green light at center of each galaxy, respectively
+		lights[3] = light{
+			pos:       mgl64.Vec3{job.Bodies[0].X, job.Bodies[0].Y, job.Bodies[0].Z},
+			color:     mgl64.Vec3{1.0, 1.0, 1.0},
+			intensity: 0.05 * lightIntensity,
+		}
+		lights[4] = light{
+			pos:       mgl64.Vec3{job.Bodies[1].X, job.Bodies[1].Y, job.Bodies[1].Z},
+			color:     mgl64.Vec3{1.0, 1.0, 1.0},
+			intensity: 0.05 * lightIntensity,
+		}
+
+		angle := mgl64.DegToRad(float64(job.Frame)) / 4
+		rot := mgl64.HomogRotate3DY(angle)
 		rvp := vp.Mul4(rot) // final rotated view-projection matrix for this frame
+
+		// have to "move" camera since "rotation" is achieved by rotating world around center
+		// camera move "opposite" direction as world
+		camAntiRot := mgl64.HomogRotate3DY(-angle)
+		camposRotated := mgl64.TransformCoordinate(campos, camAntiRot)
+		// if job.Frame%20 == 0 {
+		// 	fmt.Printf("%4d cam rotated %v\n", job.Frame, camposRotated)
+		// }
 
 		film := image.NewRGBA(image.Rect(0, 0, width, height))
 		rotateBG(rvp)
@@ -126,12 +218,13 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 				tail[2] = job.Bodies[i].Z - job.Bodies[i].Vz*(60*60*4)
 			}
 			// draw
-			col := c(job.Bodies[i].Mass)
-			if job.Bodies[i].Mass >= 1e9 {
-				plotline3d(film, zbuffer, col, rvp, world, tail)
-			} else {
-				plotpoint3d(film, zbuffer, col, rvp, world)
-			}
+			// col := c(job.Bodies[i].Mass)
+			col := sumLi(lights, camposRotated, world)
+			// if job.Bodies[i].Mass >= 1e9 {
+			// plotline3d(film, zbuffer, col, rvp, world, tail)
+			// } else {
+			plotpoint3d(film, zbuffer, col, rvp, world)
+			// }
 		}
 
 		file, err := os.Create(fmt.Sprintf("img/%010d.png", job.Frame))
