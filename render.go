@@ -8,7 +8,6 @@ import (
 	"image/png"
 	"math"
 	"os"
-	"sort"
 	"sync"
 
 	"github.com/go-gl/mathgl/mgl64"
@@ -55,6 +54,7 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 	// proj := mgl64.Ortho(-width, width, -height, height, 0.1, 100)
 	vp := proj.Mul4(view)
 
+	zbuffer := make([]float64, width*height)
 	greybg := image.NewUniform(color.Black)
 	bg := image.NewRGBA(image.Rect(0, 0, width, height))
 	zero := mgl64.Vec3{}
@@ -74,13 +74,13 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 
 		// create background image with x,y, and z axes
 		draw.Draw(bg, bg.Bounds(), greybg, image.ZP, draw.Src) // clear
-		plotline3d(bg, red, rvp, zero, posXAxis)               // draw
-		plotline3d(bg, green, rvp, zero, posYAxis)
-		plotline3d(bg, blue, rvp, zero, posZAxis)
+		plotline3d(bg, zbuffer, red, rvp, zero, posXAxis)      // draw
+		plotline3d(bg, zbuffer, green, rvp, zero, posYAxis)
+		plotline3d(bg, zbuffer, blue, rvp, zero, posZAxis)
 
 		// draw 12 lines of the simulation bound
 		for i := 0; i < 12; i++ {
-			plotline3d(bg, gray, rvp, corners[cornerOrder[i][0]], corners[cornerOrder[i][1]])
+			plotline3d(bg, zbuffer, gray, rvp, corners[cornerOrder[i][0]], corners[cornerOrder[i][1]])
 		}
 	}
 
@@ -100,10 +100,12 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 		// 	return center.Sub(edge).Len()
 		// }
 
+		initZBuffer(zbuffer)
+
 		// sort by low-to-high mass, so "important" bodies are drawn last/on top
-		sort.Slice(job.Bodies, func(i, j int) bool {
-			return job.Bodies[i].Mass < job.Bodies[j].Mass
-		})
+		// sort.Slice(job.Bodies, func(i, j int) bool {
+		// 	return job.Bodies[i].Mass < job.Bodies[j].Mass
+		// })
 
 		rot := mgl64.HomogRotate3DY(mgl64.DegToRad(float64(job.Frame)) / 4)
 		rvp := vp.Mul4(rot) // final rotated view-projection matrix for this frame
@@ -126,9 +128,9 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 			// draw
 			col := c(job.Bodies[i].Mass)
 			if job.Bodies[i].Mass >= 1e9 {
-				plotline3d(film, col, rvp, world, tail)
+				plotline3d(film, zbuffer, col, rvp, world, tail)
 			} else {
-				plotpoint3d(film, col, rvp, world)
+				plotpoint3d(film, zbuffer, col, rvp, world)
 			}
 		}
 
@@ -291,7 +293,7 @@ func plotcircle(img draw.Image, c color.Color, x0, y0, r int) {
 }
 
 // plotpoint3d draws a point at p
-func plotpoint3d(img draw.Image, c color.Color, vp mgl64.Mat4, p mgl64.Vec3) {
+func plotpoint3d(img draw.Image, zbuffer []float64, c color.Color, vp mgl64.Mat4, p mgl64.Vec3) {
 	// p = mgl64.TransformCoordinate(p, vp)
 	t := p.Vec4(1)
 	t = vp.Mul4x1(t)
@@ -301,11 +303,17 @@ func plotpoint3d(img draw.Image, c color.Color, vp mgl64.Mat4, p mgl64.Vec3) {
 	t = t.Mul(1 / t[3]) // t in NDC space
 
 	x, y := mgl64.GLToScreenCoords(t.X(), t.Y(), img.Bounds().Dx(), img.Bounds().Dy())
-	img.Set(x, y, c)
+	if i := index(x, y, img.Bounds().Dx()); zbuffer != nil &&
+		0 <= i && i < len(zbuffer) &&
+		t.Z() <= zbuffer[i] {
+
+		img.Set(x, y, c)
+		zbuffer[i] = t.Z() // set new closest z for this pizel
+	}
 }
 
 // plotline3d draws a line from p1 to p2
-func plotline3d(img draw.Image, c color.Color, vp mgl64.Mat4, p1, p2 mgl64.Vec3) {
+func plotline3d(img draw.Image, zbuffer []float64, c color.Color, vp mgl64.Mat4, p1, p2 mgl64.Vec3) {
 	// p1 = mgl64.TransformCoordinate(p1, vp)
 	// p2 = mgl64.TransformCoordinate(p2, vp)
 	t1 := p1.Vec4(1)
@@ -335,7 +343,56 @@ func plotline3d(img draw.Image, c color.Color, vp mgl64.Mat4, p1, p2 mgl64.Vec3)
 
 	x1, y1 := mgl64.GLToScreenCoords(p1.X(), p1.Y(), img.Bounds().Dx(), img.Bounds().Dy())
 	x2, y2 := mgl64.GLToScreenCoords(p2.X(), p2.Y(), img.Bounds().Dx(), img.Bounds().Dy())
-	plotline(img, c, x1, y1, x2, y2)
+	plotlinezbuff(img, c, x1, y1, x2, y2, p1.Z(), p2.Z(), zbuffer)
+}
+
+func plotlinezbuff(img draw.Image, c color.Color, x0, y0, x1, y1 int, z0, z1 float64, zbuffer []float64) {
+	x, y, z := x0, y0, z0
+	fullLength := distInt(x0, y0, x1, y1)
+
+	dx := abs(x1 - x0)
+	sx := -1
+	if x0 < x1 {
+		sx = 1
+	}
+	dy := -abs(y1 - y0)
+	sy := -1
+	if y0 < y1 {
+		sy = 1
+	}
+	err := dx + dy
+	for {
+		if i := index(x0, y0, img.Bounds().Dx()); zbuffer != nil &&
+			0 <= i && i < len(zbuffer) &&
+			z0 <= zbuffer[i] {
+
+			img.Set(x0, y0, c)
+			zbuffer[i] = z0 // set new closest z
+		}
+
+		if x0 == x1 && y0 == y1 {
+			break
+		}
+		e2 := 2 * err
+		if e2 >= dy {
+			err += dy
+			x0 += sx
+		}
+		if e2 <= dx {
+			err += dx
+			y0 += sy
+		}
+
+		curLength := distInt(x, y, x0, y0)
+		t := curLength / fullLength
+		z0 = z + (z1-z)*t
+	}
+}
+
+func distInt(x0, y0, x1, y1 int) float64 {
+	dx := float64(x1 - x0)
+	dy := float64(y1 - y0)
+	return math.Sqrt(dx*dx + dy*dy)
 }
 
 func clipWto0(behind, front *mgl64.Vec4) {
@@ -383,4 +440,14 @@ func clip(p1, p2 *mgl64.Vec3) (totallyClippedOutOfExistence bool) {
 		}
 	}
 	return false
+}
+
+func index(x, y, w int) int {
+	return x + y*w
+}
+
+func initZBuffer(zbuffer []float64) {
+	for i := range zbuffer {
+		zbuffer[i] = math.Inf(1) // fill with minimum float64
+	}
 }
