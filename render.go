@@ -32,36 +32,46 @@ type stat struct {
 	avg, min, max float64
 }
 
+// light is a point or directional light in the world.
 type light struct {
-	directional bool
-	intensity   float64
-	pos         mgl64.Vec3
-	color       mgl64.Vec3 // fractional color (RGB in [0,1]
+	directional bool       // true if the light is a directional
+	intensity   float64    // light intensity in candella (lumen/steradian)
+	pos         mgl64.Vec3 // point light world position, or directional light's direction relative to the origin
+	color       mgl64.Vec3 // fractional color (RGB in [0,1])
 }
 
-//intensity for p's distance from light, as seen from cam.
-func (l light) li(cam, p mgl64.Vec3) mgl64.Vec3 {
+// luminance for p's distance from light, as seen from cam.
+// Candella/m^2, but assume 1m^s.
+func (l light) lo(p, dirToCam mgl64.Vec3) mgl64.Vec3 {
 	if l.directional {
-		frac := fractilum(cam, p, l.pos.Mul(-1))
+		frac := fractilum(dirToCam, l.pos)
 		return l.color.Mul(frac) // directional light intensity doesn't decrease with distance
 	}
-	frac := fractilum(cam, p, l.pos.Sub(p).Normalize())
-	return l.color.Mul(l.intensity * frac / l.pos.Sub(p).LenSqr())
+	lp := l.pos.Sub(p)
+	frac := fractilum(dirToCam, lp.Normalize())
+	c := l.color.Mul(l.intensity * frac / lp.LenSqr())
+	return c
 }
 
-// portion of p illuminated from c's location by a light in dir from p . [0,1]
-func fractilum(c, p, dir mgl64.Vec3) float64 {
-	pc := p.Sub(c).Normalize()
-	// dir := l.Sub(p).Normalize()
-	return (pc.Dot(dir) - 1.0) / -2.0 // transform [-1 -> 1, 1 -> 0 ]
+// portion in [0,1] of p illuminated by a light in dirToLight as seen from
+// a camera in dirToCam from p.
+// aka "percent full" or "percent illuminated".
+// similar to the cos(theta) component to the normal lighting equation.
+func fractilum(dirToCam, dirToLight mgl64.Vec3) float64 {
+	return (dirToCam.Dot(dirToLight) + 1.0) / 2.0 // transform [-1 -> 0, 1 -> 1]
 }
 
-func sumLi(lights []light, cam, p mgl64.Vec3) color.Color {
+// sums all luminance on p and returns a color.
+// could add a reflectance value for p (aka p's "surface color")
+// but for now treat all bodies as white .
+func sumLo(lights []light, cam, p mgl64.Vec3) color.Color {
 	var sum mgl64.Vec3
+	dirToCam := cam.Sub(p).Normalize()
 	for i := range lights {
-		sum = sum.Add(lights[i].li(cam, p))
+		sum = sum.Add(lights[i].lo(p, dirToCam))
 	}
-	sum[0] = mgl64.Clamp(sum[0]*255.0, 0.0, 255.0)
+	// TODO: gamma correction? pow(R, 1/2.2)
+	sum[0] = mgl64.Clamp(sum[0]*255.0, 0.0, 255.0) // prevent uint8 overflow
 	sum[1] = mgl64.Clamp(sum[1]*255.0, 0.0, 255.0)
 	sum[2] = mgl64.Clamp(sum[2]*255.0, 0.0, 255.0)
 	return color.RGBA{
@@ -72,35 +82,44 @@ func sumLi(lights []light, cam, p mgl64.Vec3) color.Color {
 	}
 }
 
+// frameToImages renders a frame into a PNG image. File name format is:
+//     img/FrameNumber.png
 func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 	const (
-		width               = 1920.0
-		height              = 1080.0
+		width               = 1920.0     // pixels
+		height              = 1080.0     // pixels
+		bgcolor             = 0          // [0,255]
 		sqrt3over3          = 0.57735027 // sqrt(3)/3, normalized {1,1,1}
-		camRadiusFromOrigin = 0x1p15     //60e3
+		fov                 = 50         // degrees
+		camRadiusFromOrigin = 0x1p15     // meters // 60e3
 		axisLength          = camRadiusFromOrigin / 10.0
-		// scale  = 5e9 // full solar system
+		// scale = 5e9 // full solar system
 		// scale = 5e8 // inner solar system
 	)
 
-	const lightIntensity = 1e8 / (4 * math.Pi)
-	lights := make([]light, 5)
+	// this values seems to be ok. "blows out" when object is <1950m from light source
+	// lumens / 4π² steradians = candella/m² * 1m² = luminance
+	const lightIntensity = 1.5e8 / (4 * math.Pi * math.Pi)
+	lights := make([]light, 6)
 	lights[0] = light{
 		pos:       mgl64.Vec3{axisLength, 0, 0}, // end of x (red) axis
-		color:     mgl64.Vec3{1.0, 0.1, 0.1},
+		color:     mgl64.Vec3{1.0, 0.001, 0.001},
 		intensity: lightIntensity,
 	}
 	lights[1] = light{
 		pos:       mgl64.Vec3{0, axisLength, 0}, // end of Y (green) axis
-		color:     mgl64.Vec3{0.1, 1.0, 0.1},
+		color:     mgl64.Vec3{0.001, 1.0, 0.001},
 		intensity: lightIntensity,
 	}
 	lights[2] = light{
 		pos:       mgl64.Vec3{0, 0, axisLength}, // end of Z (blue) axis
-		color:     mgl64.Vec3{0.1, 0.1, 1.0},
+		color:     mgl64.Vec3{0.001, 0.001, 1.0},
 		intensity: lightIntensity,
 	}
 
+	// TODO: update transforms so that view-proj matrix is recalculated each job
+	// and the camera (not the world) is rotated. Shouldn't impose much more calculation
+	// than current method, but will be more intuitive.
 	campos := mgl64.Vec3{1, 1, 5}.
 		Normalize().
 		Mul(camRadiusFromOrigin)
@@ -108,21 +127,12 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 		campos,
 		mgl64.Vec3{0, 0, 0},
 		mgl64.Vec3{0, 1, 0}) // will cause float div-by-zero error if a point is exactly on the camera's position
-	proj := mgl64.Perspective(mgl64.DegToRad(30), width/height, 0.1, 100)
-	// proj := mgl64.Ortho(-width, width, -height, height, 0.1, 100)
+	proj := mgl64.Perspective(mgl64.DegToRad(fov), width/height, 0.1, 100)
+	// proj := mgl64.Ortho(-4*width, 4*width, -4*height, 4*height, 0.1, 100)
 	vp := proj.Mul4(view)
 
-	// lights := []light{
-	// 	{
-	// 		directional: true,
-	// 		pos:         mgl64.Vec3{0, 0, 1}, // *from* -z of simulation
-	// 		// pos:       campos.Mul(-1).Normalize(), // from camera
-	// 		color: mgl64.Vec3{1, 1, 1}, // white
-	// 	},
-	// }
-
 	zbuffer := make([]float64, width*height)
-	greybg := image.NewUniform(color.Black)
+	greybg := image.NewUniform(color.RGBA{bgcolor, bgcolor, bgcolor, 255})
 	bg := image.NewRGBA(image.Rect(0, 0, width, height))
 	zero := mgl64.Vec3{}
 	posXAxis := mgl64.Vec3{axisLength, 0, 0}
@@ -178,19 +188,7 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 		// 	return job.Bodies[i].Mass > job.Bodies[j].Mass
 		// })
 
-		// red and green light at center of each galaxy, respectively
-		lights[3] = light{
-			pos:       mgl64.Vec3{job.Bodies[0].X, job.Bodies[0].Y, job.Bodies[0].Z},
-			color:     mgl64.Vec3{1.0, 1.0, 1.0},
-			intensity: 0.05 * lightIntensity,
-		}
-		lights[4] = light{
-			pos:       mgl64.Vec3{job.Bodies[1].X, job.Bodies[1].Y, job.Bodies[1].Z},
-			color:     mgl64.Vec3{1.0, 1.0, 1.0},
-			intensity: 0.05 * lightIntensity,
-		}
-
-		angle := mgl64.DegToRad(float64(job.Frame)) / 4
+		angle := mgl64.DegToRad(float64(job.Frame)) / 4.0
 		rot := mgl64.HomogRotate3DY(angle)
 		rvp := vp.Mul4(rot) // final rotated view-projection matrix for this frame
 
@@ -202,24 +200,48 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 		// 	fmt.Printf("%4d cam rotated %v\n", job.Frame, camposRotated)
 		// }
 
+		// light at center of each galaxy
+		lights[3] = light{
+			pos:       mgl64.Vec3{job.Bodies[0].X, job.Bodies[0].Y, job.Bodies[0].Z},
+			color:     mgl64.Vec3{0.9, 0.9, 0.5},
+			intensity: 0.075 * lightIntensity,
+		}
+		lights[4] = light{
+			pos:       mgl64.Vec3{job.Bodies[1].X, job.Bodies[1].Y, job.Bodies[1].Z},
+			color:     mgl64.Vec3{0.9, 0.9, 0.5},
+			intensity: 0.075 * lightIntensity,
+		}
+
+		// directional light from camera position can be used to simulate "ambient light source"
+		// lights := []light{
+		lights[5] = light{
+			directional: true,
+			// pos:         mgl64.Vec3{0, 0, -1}, // light at infinite distance in -z of simulation
+			pos:   camposRotated.Normalize(), // from camera
+			color: mgl64.Vec3{0.1, 0.1, 0.1}, // very dim 'ambient' illumination
+		}
+		// }
+
 		film := image.NewRGBA(image.Rect(0, 0, width, height))
 		rotateBG(rvp)
 		draw.Draw(film, film.Bounds(), bg, image.ZP, draw.Src) // fill film with background image
 
-		var world, tail mgl64.Vec3
+		var world mgl64.Vec3
+		// var tail mgl64.Vec3
 		for i := 0; i < len(job.Bodies); i++ {
 			// world positions of body and a "tail"
 			world[0] = job.Bodies[i].X
 			world[1] = job.Bodies[i].Y
 			world[2] = job.Bodies[i].Z
-			if job.Bodies[i].Mass >= 1e9 {
-				tail[0] = job.Bodies[i].X - job.Bodies[i].Vx*(60*60*4)
-				tail[1] = job.Bodies[i].Y - job.Bodies[i].Vy*(60*60*4)
-				tail[2] = job.Bodies[i].Z - job.Bodies[i].Vz*(60*60*4)
-			}
+			// if job.Bodies[i].Mass >= 1e9 {
+			// 	tail[0] = job.Bodies[i].X - job.Bodies[i].Vx*(60*60*4)
+			// 	tail[1] = job.Bodies[i].Y - job.Bodies[i].Vy*(60*60*4)
+			// 	tail[2] = job.Bodies[i].Z - job.Bodies[i].Vz*(60*60*4)
+			// }
+
 			// draw
 			// col := c(job.Bodies[i].Mass)
-			col := sumLi(lights, camposRotated, world)
+			col := sumLo(lights, camposRotated, world)
 			// if job.Bodies[i].Mass >= 1e9 {
 			// plotline3d(film, zbuffer, col, rvp, world, tail)
 			// } else {
@@ -541,6 +563,6 @@ func index(x, y, w int) int {
 
 func initZBuffer(zbuffer []float64) {
 	for i := range zbuffer {
-		zbuffer[i] = math.Inf(1) // fill with minimum float64
+		zbuffer[i] = math.Inf(1) // fill with maximum float64
 	}
 }
