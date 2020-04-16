@@ -43,7 +43,7 @@ func main() {
 	// bodies := solarsystem()
 	bodies := makebodies(*numbodies, []body{
 		// uses body.f to generate initial velocities of child bodies.
-		// {Mass: 1e10, Radius: 1.0, X: 0, Y: 0, Z: 0, fz: -1}, // for this mass, radius must be ~1e6m to be similar to density of the sun, 1410kg/m3
+		// {Mass: 1e10, Radius: 1.0, X: 0, Y: 0, Z: 0, fy: 1}, // for this mass, radius must be ~1e6m to be similar to density of the sun, 1410kg/m3
 		{Mass: 1e10, Radius: 1.0, X: -9000, Y: -100, Z: -2000, fy: 1, Vx: 0.004, Vz: -0.001},
 		{Mass: 1e10, Radius: 1.0, X: 9000, Y: 100, Z: 2000, fz: -1, Vx: -0.003, Vz: 0.002},
 	})
@@ -178,11 +178,12 @@ func main() {
 		// progress
 		avgTimePerFrame := time.Since(start).Milliseconds() / int64(frame-startFrame+1)
 		estTimeLeft := time.Duration(avgTimePerFrame*int64(frames-frame)) * time.Millisecond
-		fmt.Printf("%.1f%%, %d bodies, %dms/frame, %s remaining           \r",
+		fmt.Printf("%.1f%%, %d bodies, %dms/frame, %s remaining, %s elapsed                    \r",
 			100*float64(frame-startFrame)/float64(frames-startFrame),
 			remainingBodies,
 			avgTimePerFrame,
 			estTimeLeft.Truncate(time.Second),
+			time.Since(start).Truncate(time.Second),
 		)
 	}
 	close(ch)

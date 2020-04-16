@@ -11,6 +11,9 @@ import (
 	"sync"
 
 	"github.com/go-gl/mathgl/mgl64"
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/inconsolata"
+	"golang.org/x/image/math/fixed"
 )
 
 /*
@@ -35,7 +38,7 @@ type stat struct {
 // light is a point or directional light in the world.
 type light struct {
 	directional bool       // true if the light is a directional
-	intensity   float64    // light intensity in candella (lumen/steradian)
+	intensity   float64    // light intensity in candela
 	pos         mgl64.Vec3 // point light world position, or directional light's direction relative to the origin
 	color       mgl64.Vec3 // fractional color (RGB in [0,1])
 }
@@ -49,7 +52,7 @@ func (l light) lo(p, dirToCam mgl64.Vec3) mgl64.Vec3 {
 	}
 	lp := l.pos.Sub(p)
 	frac := fractilum(dirToCam, lp.Normalize())
-	c := l.color.Mul(l.intensity * frac / lp.LenSqr())
+	c := l.color.Mul(math.Pi * l.intensity * frac / lp.LenSqr())
 	return c
 }
 
@@ -64,16 +67,17 @@ func fractilum(dirToCam, dirToLight mgl64.Vec3) float64 {
 // sums all luminance on p and returns a color.
 // could add a reflectance value for p (aka p's "surface color")
 // but for now treat all bodies as white .
-func sumLo(lights []light, cam, p mgl64.Vec3) color.Color {
+func sumLo(lights []light, cam, p mgl64.Vec3, c color.RGBA) color.Color {
 	var sum mgl64.Vec3
-	dirToCam := cam.Sub(p).Normalize()
+	toCam := cam.Sub(p)
+	dirToCam := toCam.Normalize()
 	for i := range lights {
 		sum = sum.Add(lights[i].lo(p, dirToCam))
 	}
 	// TODO: gamma correction? pow(R, 1/2.2)
-	sum[0] = mgl64.Clamp(sum[0]*255.0, 0.0, 255.0) // prevent uint8 overflow
-	sum[1] = mgl64.Clamp(sum[1]*255.0, 0.0, 255.0)
-	sum[2] = mgl64.Clamp(sum[2]*255.0, 0.0, 255.0)
+	sum[0] = mgl64.Clamp(sum[0]*float64(c.R), 0.0, 255.0) // prevent uint8 overflow
+	sum[1] = mgl64.Clamp(sum[1]*float64(c.G), 0.0, 255.0)
+	sum[2] = mgl64.Clamp(sum[2]*float64(c.B), 0.0, 255.0)
 	return color.RGBA{
 		uint8(sum[0]),
 		uint8(sum[1]),
@@ -81,6 +85,8 @@ func sumLo(lights []light, cam, p mgl64.Vec3) color.Color {
 		255,
 	}
 }
+
+func fovFromRadiusBase(r, b float64) float64 { return 2 * math.Atan(0.5*b/r) }
 
 // frameToImages renders a frame into a PNG image. File name format is:
 //     img/FrameNumber.png
@@ -90,16 +96,17 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 		height              = 1080.0     // pixels
 		bgcolor             = 0          // [0,255]
 		sqrt3over3          = 0.57735027 // sqrt(3)/3, normalized {1,1,1}
-		fov                 = 50         // degrees
+		fov                 = 15         // degrees
 		camRadiusFromOrigin = 0x1p15     // meters // 60e3
 		axisLength          = camRadiusFromOrigin / 10.0
+		simWidth            = 0x1p16 // meters
 		// scale = 5e9 // full solar system
 		// scale = 5e8 // inner solar system
 	)
 
-	// this values seems to be ok. "blows out" when object is <1950m from light source
-	// lumens / 4π² steradians = candella/m² * 1m² = luminance
-	const lightIntensity = 1.5e8 / (4 * math.Pi * math.Pi)
+	// this values seems to be ok. "blows out" when object is <1000m from light source
+	// (luminous flux) lumens / 4π steradians = candela (luminance/luminous intensity)
+	const lightIntensity = 1e6 //1e6
 	lights := make([]light, 6)
 	lights[0] = light{
 		pos:       mgl64.Vec3{axisLength, 0, 0}, // end of x (red) axis
@@ -117,47 +124,53 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 		intensity: lightIntensity,
 	}
 
-	// TODO: update transforms so that view-proj matrix is recalculated each job
-	// and the camera (not the world) is rotated. Shouldn't impose much more calculation
-	// than current method, but will be more intuitive.
-	campos := mgl64.Vec3{1, 1, 5}.
+	// setup for camera and view-projection matrix
+	startCamPos := mgl64.Vec3{1, 1, 5}.
 		Normalize().
 		Mul(camRadiusFromOrigin)
-	view := mgl64.LookAtV(
-		campos,
-		mgl64.Vec3{0, 0, 0},
-		mgl64.Vec3{0, 1, 0}) // will cause float div-by-zero error if a point is exactly on the camera's position
-	proj := mgl64.Perspective(mgl64.DegToRad(fov), width/height, 0.1, 100)
-	// proj := mgl64.Ortho(-4*width, 4*width, -4*height, 4*height, 0.1, 100)
-	vp := proj.Mul4(view)
-
-	zbuffer := make([]float64, width*height)
-	greybg := image.NewUniform(color.RGBA{bgcolor, bgcolor, bgcolor, 255})
-	bg := image.NewRGBA(image.Rect(0, 0, width, height))
-	zero := mgl64.Vec3{}
-	posXAxis := mgl64.Vec3{axisLength, 0, 0}
-	posYAxis := mgl64.Vec3{0, axisLength, 0}
-	posZAxis := mgl64.Vec3{0, 0, axisLength}
-	corners := nodebound{
-		center: mgl64.Vec3{},
-		width:  mgl64.Vec3{0x1p16, 0x1p16, 0x1p16}}.corners()
-	cornerOrder := [12][2]uint8{
-		{0, 1}, {2, 3}, {4, 5}, {6, 7},
-		{0, 2}, {1, 3}, {4, 6}, {5, 7},
-		{0, 4}, {1, 5}, {2, 6}, {3, 7},
+	makeViewProjMatrix := func(rotAngle float64, rotAxis, target mgl64.Vec3, fov float64) (vp mgl64.Mat4, camPos mgl64.Vec3) {
+		camPos = mgl64.QuatRotate(rotAngle, rotAxis).Rotate(startCamPos)
+		view := mgl64.LookAtV(
+			camPos,
+			target,
+			mgl64.Vec3{0, 1, 0}) // will cause float div-by-zero error if a point is exactly on the camera's position
+		proj := mgl64.Perspective(fov, width/height, 0.1, 100)
+		// proj := mgl64.Ortho(-4*width, 4*width, -4*height, 4*height, 0.1, 100)
+		vp = proj.Mul4(view)
+		return
 	}
+
+	// setup for rendering to "film"
+	film := image.NewRGBA(image.Rect(0, 0, width, height))
+	// bg := image.NewRGBA(image.Rect(0, 0, width, height))
+	zbuffer := make([]float64, width*height)
+
 	// func to redraw bg with correctly rotated axes
-	rotateBG := func(rvp mgl64.Mat4) {
+	drawBG := func(vp mgl64.Mat4) {
+		// background, axes, bounds
+		greybg := image.NewUniform(color.RGBA{bgcolor, bgcolor, bgcolor, 255})
+		zero := mgl64.Vec3{}
+		posXAxis := mgl64.Vec3{axisLength, 0, 0}
+		posYAxis := mgl64.Vec3{0, axisLength, 0}
+		posZAxis := mgl64.Vec3{0, 0, axisLength}
+		corners := nodebound{
+			center: mgl64.Vec3{},
+			width:  mgl64.Vec3{simWidth, simWidth, simWidth}}.corners()
+		cornerOrder := [12][2]uint8{
+			{0, 1}, {2, 3}, {4, 5}, {6, 7},
+			{0, 2}, {1, 3}, {4, 6}, {5, 7},
+			{0, 4}, {1, 5}, {2, 6}, {3, 7},
+		}
 
 		// create background image with x,y, and z axes
-		draw.Draw(bg, bg.Bounds(), greybg, image.ZP, draw.Src) // clear
-		plotline3d(bg, zbuffer, red, rvp, zero, posXAxis)      // draw
-		plotline3d(bg, zbuffer, green, rvp, zero, posYAxis)
-		plotline3d(bg, zbuffer, blue, rvp, zero, posZAxis)
+		draw.Draw(film, film.Bounds(), greybg, image.ZP, draw.Src) // clear
+		plotline3d(film, zbuffer, red, vp, zero, posXAxis)         // draw
+		plotline3d(film, zbuffer, green, vp, zero, posYAxis)
+		plotline3d(film, zbuffer, blue, vp, zero, posZAxis)
 
 		// draw 12 lines of the simulation bound
 		for i := 0; i < 12; i++ {
-			plotline3d(bg, zbuffer, gray, rvp, corners[cornerOrder[i][0]], corners[cornerOrder[i][1]])
+			plotline3d(film, zbuffer, gray, vp, corners[cornerOrder[i][0]], corners[cornerOrder[i][1]])
 		}
 	}
 
@@ -178,75 +191,65 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 		// }
 
 		initZBuffer(zbuffer)
-
-		//sort by low-to-high mass, so "important" bodies are drawn last/on top
-		// sort.Slice(job.Bodies, func(i, j int) bool {
-		// 	return job.Bodies[i].Mass < job.Bodies[j].Mass
-		// })
-		// high-to-low mass
-		// sort.Slice(job.Bodies, func(i, j int) bool {
-		// 	return job.Bodies[i].Mass > job.Bodies[j].Mass
-		// })
-
-		angle := mgl64.DegToRad(float64(job.Frame)) / 4.0
-		rot := mgl64.HomogRotate3DY(angle)
-		rvp := vp.Mul4(rot) // final rotated view-projection matrix for this frame
+		g0 := mgl64.Vec3{job.Bodies[0].X, job.Bodies[0].Y, job.Bodies[0].Z}
+		g1 := mgl64.Vec3{job.Bodies[1].X, job.Bodies[1].Y, job.Bodies[1].Z}
 
 		// have to "move" camera since "rotation" is achieved by rotating world around center
 		// camera move "opposite" direction as world
-		camAntiRot := mgl64.HomogRotate3DY(-angle)
-		camposRotated := mgl64.TransformCoordinate(campos, camAntiRot)
-		// if job.Frame%20 == 0 {
-		// 	fmt.Printf("%4d cam rotated %v\n", job.Frame, camposRotated)
-		// }
+		angle := mgl64.DegToRad(float64(job.Frame)) / 4.0
+		fov := fovFromRadiusBase(camRadiusFromOrigin, g0.Sub(g1).Len()) //6.5e3)
+		// fov := mgl64.DegToRad(fov)
+		vp, camPos := makeViewProjMatrix(
+			-angle,
+			mgl64.Vec3{0, 1, 0},
+			g0.Add(g1).Mul(0.5),
+			fov)
 
 		// light at center of each galaxy
 		lights[3] = light{
-			pos:       mgl64.Vec3{job.Bodies[0].X, job.Bodies[0].Y, job.Bodies[0].Z},
+			pos:       g0,
 			color:     mgl64.Vec3{0.9, 0.9, 0.5},
 			intensity: 0.075 * lightIntensity,
 		}
 		lights[4] = light{
-			pos:       mgl64.Vec3{job.Bodies[1].X, job.Bodies[1].Y, job.Bodies[1].Z},
+			pos:       g1,
 			color:     mgl64.Vec3{0.9, 0.9, 0.5},
 			intensity: 0.075 * lightIntensity,
 		}
+		// lights[0] = light{
+		// 	pos:       mgl64.Vec3{job.Bodies[0].X, job.Bodies[0].Y, job.Bodies[0].Z},
+		// 	color:     mgl64.Vec3{0.9, 0.9, 0.6},
+		// 	intensity: 1 * lightIntensity,
+		// }
 
 		// directional light from camera position can be used to simulate "ambient light source"
 		// lights := []light{
 		lights[5] = light{
 			directional: true,
 			// pos:         mgl64.Vec3{0, 0, -1}, // light at infinite distance in -z of simulation
-			pos:   camposRotated.Normalize(), // from camera
+			pos:   camPos.Normalize(),        // from camera
 			color: mgl64.Vec3{0.1, 0.1, 0.1}, // very dim 'ambient' illumination
 		}
 		// }
 
-		film := image.NewRGBA(image.Rect(0, 0, width, height))
-		rotateBG(rvp)
-		draw.Draw(film, film.Bounds(), bg, image.ZP, draw.Src) // fill film with background image
+		drawBG(vp)
+		// draw.Draw(film, film.Bounds(), bg, image.ZP, draw.Src) // fill film with background image
+		plotText(film, col(0), row(1), white, fmt.Sprintf("frame:  %d", job.Frame))
+		plotText(film, col(0), row(2), white, fmt.Sprintf("bodies: %d", len(job.Bodies)))
+		plotText(film, col(0), row(3), white, fmt.Sprintf("rot:    %.1f°", mgl64.RadToDeg(angle)))
+		plotText(film, col(0), row(4), white, fmt.Sprintf("fov:    %.1f°", mgl64.RadToDeg(fov)))
 
 		var world mgl64.Vec3
-		// var tail mgl64.Vec3
 		for i := 0; i < len(job.Bodies); i++ {
-			// world positions of body and a "tail"
+			// world positions of body
 			world[0] = job.Bodies[i].X
 			world[1] = job.Bodies[i].Y
 			world[2] = job.Bodies[i].Z
-			// if job.Bodies[i].Mass >= 1e9 {
-			// 	tail[0] = job.Bodies[i].X - job.Bodies[i].Vx*(60*60*4)
-			// 	tail[1] = job.Bodies[i].Y - job.Bodies[i].Vy*(60*60*4)
-			// 	tail[2] = job.Bodies[i].Z - job.Bodies[i].Vz*(60*60*4)
-			// }
 
 			// draw
-			// col := c(job.Bodies[i].Mass)
-			col := sumLo(lights, camposRotated, world)
-			// if job.Bodies[i].Mass >= 1e9 {
-			// plotline3d(film, zbuffer, col, rvp, world, tail)
-			// } else {
-			plotpoint3d(film, zbuffer, col, rvp, world)
-			// }
+			// colbase := c(job.Bodies[i].Mass)
+			col := sumLo(lights, camPos, world, white)
+			plotpoint3d(film, zbuffer, col, vp, world)
 		}
 
 		file, err := os.Create(fmt.Sprintf("img/%010d.png", job.Frame))
@@ -300,6 +303,7 @@ func calculateStats(bodies []body) (stats [3]stat) {
 }
 
 var (
+	white     = color.RGBA{255, 255, 255, 255}
 	lightgray = color.RGBA{192, 192, 192, 255}
 	gray      = color.RGBA{128, 128, 128, 255}
 	darkgray  = color.RGBA{64, 64, 64, 255}
@@ -312,7 +316,7 @@ var (
 	cyan      = color.RGBA{0, 255, 255, 255}
 )
 
-func c(m float64) color.Color {
+func c(m float64) color.RGBA {
 	const step = 1e10 / 7
 	switch {
 	case m > 6*step:
@@ -328,9 +332,29 @@ func c(m float64) color.Color {
 	case m > 1*step:
 		return cyan
 	default:
-		return color.White
+		return white
 	}
 }
+
+// plotText on img at (x,y). Text is 8x16 inconsolata, anchored at the
+// top left of the text.
+func plotText(img draw.Image, x, y int, col color.Color, label string) {
+	// https://stackoverflow.com/questions/38299930/how-to-add-a-simple-text-label-to-an-image-in-go
+	point := fixed.Point26_6{
+		X: fixed.Int26_6(x * 64),
+		Y: fixed.Int26_6((16 + y) * 64)}
+
+	d := &font.Drawer{
+		Dst:  img,
+		Src:  image.NewUniform(col),
+		Face: inconsolata.Regular8x16,
+		Dot:  point,
+	}
+	d.DrawString(label)
+}
+
+func col(n int) int { return n * 8 }
+func row(n int) int { return n * 16 }
 
 // plotline draws a simple line on img from (x0,y0) to (x1,y1).
 //

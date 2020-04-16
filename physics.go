@@ -14,9 +14,13 @@ physics section
 
 // initializes n bodies.
 func makebodies(n int, cores []body) []*body {
-	const orbitalVDampening = 1.0
-	const meanMass = 50e3   //1e3 // 50e3kg@2m =1492 kg/m3; 6e3kg@1m = 1432kg/m3
-	const defaultRadius = 2 // given mean mass, this will produce very "nondense" bodies (1000kg@1m radius ≈ 238 kg/m³)
+	const (
+		orbitalVDampening  = 1.0
+		meanMass           = 1e3 //50e3 //1e3 // 50e3kg@2m =1492 kg/m3; 6e3kg@1m = 1432kg/m3
+		defaultRadius      = 2   // given mean mass, this will produce very "nondense" bodies (1000kg@1m radius ≈ 238 kg/m³)
+		galaxyRadialStdDev = 1e3 //1000.0 // m
+		galaxyAxialStdDev  = 1e1 //100    // m
+	)
 	nc := len(cores)
 	bodies := make([]*body, n+nc)
 
@@ -33,9 +37,9 @@ func makebodies(n int, cores []body) []*body {
 		bodies[i].ID = uint64(i)
 		bodies[i].Mass = m
 		bodies[i].Radius = defaultRadius
-		bodies[i].X = rand.NormFloat64()*(1000*(1-math.Abs(core.fx))+100*math.Abs(core.fx)) + core.X
-		bodies[i].Y = rand.NormFloat64()*(1000*(1-math.Abs(core.fy))+100*math.Abs(core.fy)) + core.Y
-		bodies[i].Z = rand.NormFloat64()*(1000*(1-math.Abs(core.fz))+100*math.Abs(core.fz)) + core.Z
+		bodies[i].X = rand.NormFloat64()*(galaxyRadialStdDev*(1-math.Abs(core.fx))+galaxyAxialStdDev*math.Abs(core.fx)) + core.X
+		bodies[i].Y = rand.NormFloat64()*(galaxyRadialStdDev*(1-math.Abs(core.fy))+galaxyAxialStdDev*math.Abs(core.fy)) + core.Y
+		bodies[i].Z = rand.NormFloat64()*(galaxyRadialStdDev*(1-math.Abs(core.fz))+galaxyAxialStdDev*math.Abs(core.fz)) + core.Z
 
 		if nc > 0 {
 			// apply initial orbital velocity around center point
