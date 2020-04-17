@@ -125,19 +125,19 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 	}
 
 	// setup for camera and view-projection matrix
+	camRotAxis := mgl64.Vec3{0, 1, 0}
 	startCamPos := mgl64.Vec3{1, 1, 5}.
 		Normalize().
 		Mul(camRadiusFromOrigin)
-	makeViewProjMatrix := func(rotAngle float64, rotAxis, target mgl64.Vec3, fov float64) (vp mgl64.Mat4, camPos mgl64.Vec3) {
-		camPos = mgl64.QuatRotate(rotAngle, rotAxis).Rotate(startCamPos)
+
+	makeViewProjMatrix := func(camPos, target mgl64.Vec3, fov float64) mgl64.Mat4 {
 		view := mgl64.LookAtV(
 			camPos,
 			target,
 			mgl64.Vec3{0, 1, 0}) // will cause float div-by-zero error if a point is exactly on the camera's position
 		proj := mgl64.Perspective(fov, width/height, 0.1, 100)
 		// proj := mgl64.Ortho(-4*width, 4*width, -4*height, 4*height, 0.1, 100)
-		vp = proj.Mul4(view)
-		return
+		return proj.Mul4(view)
 	}
 
 	// setup for rendering to "film"
@@ -193,17 +193,14 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 		initZBuffer(zbuffer)
 		g0 := mgl64.Vec3{job.Bodies[0].X, job.Bodies[0].Y, job.Bodies[0].Z}
 		g1 := mgl64.Vec3{job.Bodies[1].X, job.Bodies[1].Y, job.Bodies[1].Z}
+		middle := g0.Add(g1).Mul(0.5)
 
-		// have to "move" camera since "rotation" is achieved by rotating world around center
-		// camera move "opposite" direction as world
+		// move camera and create a view-projection matrix
 		angle := mgl64.DegToRad(float64(job.Frame)) / 4.0
-		fov := fovFromRadiusBase(camRadiusFromOrigin, g0.Sub(g1).Len()) //6.5e3)
+		camPos := mgl64.QuatRotate(-angle, camRotAxis).Rotate(startCamPos)
+		fov := fovFromRadiusBase(camPos.Sub(middle).Len(), g0.Sub(g1).Len()*1.5) //6.5e3)
 		// fov := mgl64.DegToRad(fov)
-		vp, camPos := makeViewProjMatrix(
-			-angle,
-			mgl64.Vec3{0, 1, 0},
-			g0.Add(g1).Mul(0.5),
-			fov)
+		vp := makeViewProjMatrix(camPos, middle, fov)
 
 		// light at center of each galaxy
 		lights[3] = light{

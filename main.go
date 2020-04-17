@@ -24,18 +24,6 @@ func main() {
 	nocollision := flag.Bool("nocollision", false, "do not perform collision testing")
 	flag.Parse()
 
-	// setup image output workers
-	ch := make(chan *frameJob, 32)
-	workers := 4
-	wg := sync.WaitGroup{}
-	wg.Add(workers)
-	// db := opendb("bodies.sqlite")
-	for i := 0; i < workers; i++ {
-		go frameToImages(&wg, ch)
-		// go frameToSqlite(db, &wg, ch)
-		// go frameToMemory(&wg, ch)
-	}
-
 	// simulation parameters
 	const dt = (60 * 60)                        // 1 hour step per simulation iteration
 	const iterPerFrame = 1                      // times to advance the simulation per rendered frame
@@ -56,6 +44,19 @@ func main() {
 		overwriteBodies(&bodies, lastFrame.Bodies)
 		startFrame = lastFrame.Frame
 		frames += startFrame
+	}
+
+	// setup image output workers
+	ch := make(chan *frameJob, 32)
+	workers := 2
+	wg := sync.WaitGroup{}
+	wg.Add(workers)
+	// db := opendb("bodies.sqlite")
+	god := newGodOfBuckets(frames, 48)
+	for i := 0; i < workers; i++ {
+		// go frameToImages(&wg, ch)
+		// go frameToSqlite(db, &wg, ch)
+		go frameToMemory(god, &wg, ch)
 	}
 
 	// print parameters

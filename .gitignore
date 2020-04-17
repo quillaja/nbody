@@ -1,6 +1,7 @@
 .vscode
 img
 vid
+chunks
 
 nbody
 *.data
