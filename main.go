@@ -48,11 +48,12 @@ func main() {
 
 	// setup image output workers
 	ch := make(chan *frameJob, 32)
-	workers := 2
+	workers := 4
 	wg := sync.WaitGroup{}
 	wg.Add(workers)
 	// db := opendb("bodies.sqlite")
-	god := newGodOfBuckets(frames, 48)
+	god := newGodOfBuckets(frames, idealBucketSize(*numbodies), 1) // default lvl is 6
+	fmt.Printf("bucket size: %d\ndisk usage@24B/body: %.2fGB\n", god.bucketSize, float64(frames*(*numbodies)*24)/0x1p30)
 	for i := 0; i < workers; i++ {
 		// go frameToImages(&wg, ch)
 		// go frameToSqlite(db, &wg, ch)

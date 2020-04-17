@@ -1,12 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"compress/zlib"
 	"encoding/gob"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"sync"
-	"time"
 )
 
 /*
@@ -36,13 +37,12 @@ map-map: 141mb (storing body id only in map index)
 reached 100% done on the simulation due to using all the system memory (15.6gb). =)
 
 using GOD of buckets (chunked compressed gobs):
+~33 bytes/body uncompressed, 77mb per chunk
 88 frames * 50,002 bodies: 88mb on disk, took 29 sec (48mb/chunk, best compression)
-876 frames * 50,002 bodies: ??874mb on disk, took 2.5 min (48mb/chunk, default compression, 22-23s to write each chunk)
+876 frames * 50,002 bodies: 874mb on disk, ~21byte/body took 2.5 min encode/compress/direct-to-file (48mb/chunk, default compression (6), 22-23s to write each chunk)
+876 frames * 50,002 bodies: 874mb on disk, ~21byte/body took 2.1 min encode/compress/buffer/file (48mb/chunk, default compression, 17-18s to write each chunk)
+same settings, lvl 2 compressiong, 21 bytes/body, 5-6s to for each 49mb chunk. (much better!)
 */
-
-//
-// NOTE this bucketing stuff needs serious help!
-//
 
 type renderindex map[uint32]map[uint32]renderbody
 
@@ -53,33 +53,43 @@ type renderbody struct {
 }
 
 type godOfBuckets struct {
+	compressionLvl      int
 	bucketSize          int
 	expectedBucketSizes []int
 	buckets             []int
 	renderstore         renderindex
 
 	dumperWG *sync.WaitGroup
-	sem      chan struct{}
+	sem      chan *bytes.Buffer
 	m        *sync.Mutex
 }
 
-// totalFrames = last frame number + 1
-func newGodOfBuckets(lastFrame, framesPerBucket int) *godOfBuckets {
+func newGodOfBuckets(lastFrame, framesPerBucket, compressionLvl int) *godOfBuckets {
 	god := godOfBuckets{
+		compressionLvl:      compressionLvl,
 		bucketSize:          framesPerBucket,
 		expectedBucketSizes: make([]int, lastFrame/framesPerBucket+1),
 		buckets:             make([]int, lastFrame/framesPerBucket+1),
 		renderstore:         make(renderindex, lastFrame+1), // pre-allocated
 
 		dumperWG: &sync.WaitGroup{},
-		sem:      make(chan struct{}, 4),
+		sem:      make(chan *bytes.Buffer, 4),
 		m:        &sync.Mutex{},
 	}
+
+	// determine the number of frames expected in each bucket.
 	// do it the dumb way for now
 	for frame := 0; frame <= lastFrame; frame++ {
 		bnum := frame / god.bucketSize
 		god.expectedBucketSizes[bnum]++
 	}
+
+	// fill the semaphore with buffers for dumpers.
+	// buffers serve double purpose as semaphore and scratch space.
+	for i := 0; i < cap(god.sem); i++ {
+		god.sem <- bytes.NewBuffer(make([]byte, 0, 50*1<<20)) // 50mb buffer CAPACITY to start
+	}
+
 	return &god
 }
 
@@ -100,37 +110,30 @@ func (god *godOfBuckets) finishedFrame(frame uint32, frameData map[uint32]render
 	// remaining "active" dumpers
 	if full {
 		// dump bucket
-		go func() {
-			god.sem <- struct{}{}
-			god.dumperWG.Add(1)
-			god.dumper(bnum)
-			god.dumperWG.Done()
-			<-god.sem
-		}()
+		go god.dumper(bnum)
 	}
 }
 
 func (god *godOfBuckets) dumper(bucket int) {
-	start := time.Now()
+	god.dumperWG.Add(1)
+	buf := <-god.sem
+
+	// start := time.Now()
+
 	l, h := bucketToFrames(bucket, god.bucketSize) // indices to dump
 	dump := make(renderindex, god.bucketSize)
-	for ; l <= h; l++ {
+	for i := l; i <= h; i++ {
 		// transfer subset of frames to "dump"
 		// to compressed gob file
-		dump[uint32(l)] = god.renderstore[uint32(l)]
-		delete(god.renderstore, uint32(l))
+		dump[uint32(i)] = god.renderstore[uint32(i)]
+		delete(god.renderstore, uint32(i))
 	}
 
 	err := os.Mkdir("chunks", 0755)
-	// if err != nil {
-	// 	panic(err)
-	// }
-	file, err := os.Create(fmt.Sprintf("chunks/%010d.chunk", h))
-	if err != nil {
-		panic(err)
-	}
-	// buf := bytes.NewBuffer(make([]byte, 100*1<<20)) // 100mb buffer to start
-	zw, err := zlib.NewWriterLevel(file, zlib.DefaultCompression)
+
+	// write compressed data to buffer first,
+	// then to disk (is faster than directly to disk)
+	zw, err := zlib.NewWriterLevel(buf, god.compressionLvl)
 	if err != nil {
 		panic(err)
 	}
@@ -139,21 +142,35 @@ func (god *godOfBuckets) dumper(bucket int) {
 		panic(err)
 	}
 	zw.Close()
-	size := 0 //buf.Len()
-	// err = ioutil.WriteFile(fmt.Sprintf("chunks/%010d.chunk", h), buf.Bytes(), 0644)
-	// if err != nil {
-	// 	panic(err)
-	// }
-	zw.Close()
-	// file.Close()
-	fmt.Printf("%s to dump bucket %d, %d bytes\n", time.Since(start), bucket, size)
-}
+	err = ioutil.WriteFile(fmt.Sprintf("chunks/%010d.chunk", h), buf.Bytes(), 0644)
+	if err != nil {
+		panic(err)
+	}
 
-// func frameToBucket(frame uint32, bucketSize int) int { return int(frame) / bucketSize }
+	// debug status print
+	// size := buf.Len()
+	// bods := len(dump[uint32(l)])
+	// fmt.Printf("%s to dump bucket %d, %d bodies/frame, %d bytes, approx %d bytes per body\n", time.Since(start), bucket, bods, size, size/(bods*god.bucketSize))
+
+	buf.Reset() // reset len, keep cap
+	god.sem <- buf
+	god.dumperWG.Done()
+}
 
 func bucketToFrames(bucketNumber, bucketSize int) (lowIndex, highIndex int) {
 	// inclusive indicies
 	return bucketNumber * bucketSize, (bucketNumber+1)*bucketSize - 1
+}
+
+func idealBucketSize(numBodies int) int {
+	const (
+		sizePerBody    = 24           // bytes
+		idealChunkSize = 32 * 1 << 20 // 32MB
+		minBucketSize  = 2
+	)
+	framesPerChunk := idealChunkSize / (sizePerBody * numBodies)
+	extra := minBucketSize - framesPerChunk%minBucketSize
+	return framesPerChunk + extra
 }
 
 func frameToMemory(god *godOfBuckets, wg *sync.WaitGroup, ch chan *frameJob) {
@@ -182,13 +199,23 @@ func frameToMemory(god *godOfBuckets, wg *sync.WaitGroup, ch chan *frameJob) {
 	wg.Done()
 }
 
-// func writeRenderStoreToDisk(filename string) {
-// 	file, err := os.Create(filename)
-// 	if err != nil {
-// 		panic(err)
-// 	}
-// 	defer file.Close()
+func readChunk(filename string) (renderindex, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	zr, err := zlib.NewReader(file)
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
 
-// 	enc := gob.NewEncoder(file)
-// 	enc.Encode(renderstore)
-// }
+	frameData := make(renderindex)
+	dec := gob.NewDecoder(zr)
+	err = dec.Decode(&frameData)
+	if err != nil {
+		return nil, err
+	}
+	return frameData, nil
+}
