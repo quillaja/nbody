@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -44,7 +47,12 @@ using GOD of buckets (chunked compressed gobs):
 same settings, lvl 2 compressiong, 21 bytes/body, 5-6s to for each 49mb chunk. (much better!)
 */
 
-type renderindex map[uint32]map[uint32]renderbody
+const (
+	chunkFilenameFormat = "%010d.chunk"
+)
+
+type framedata map[uint32]renderbody
+type renderindex map[uint32]framedata
 
 type renderbody struct {
 	// ID           uint32
@@ -52,25 +60,43 @@ type renderbody struct {
 	Mass, Radius float32
 }
 
-type godOfBuckets struct {
-	compressionLvl      int
-	bucketSize          int
-	expectedBucketSizes []int
-	buckets             []int
-	renderstore         renderindex
+func (fd framedata) bodies() []body {
+	n := len(fd)
+	bs := make([]body, 0, n)
+	for id, b := range fd {
+		bs = append(bs, body{
+			ID:     uint64(id),
+			Mass:   float64(b.Mass),
+			Radius: float64(b.Radius),
+			X:      float64(b.X),
+			Y:      float64(b.Y),
+			Z:      float64(b.Z),
+		})
+	}
+	return bs
+}
+
+type chunkRenderer struct {
+	outputDir          string
+	compressionLvl     int
+	chunkSize          int
+	expectedChunkSizes []int
+	currentChunkSizes  []int
+	chunks             []renderindex
 
 	dumperWG *sync.WaitGroup
 	sem      chan *bytes.Buffer
 	m        *sync.Mutex
 }
 
-func newGodOfBuckets(lastFrame, framesPerBucket, compressionLvl int) *godOfBuckets {
-	god := godOfBuckets{
-		compressionLvl:      compressionLvl,
-		bucketSize:          framesPerBucket,
-		expectedBucketSizes: make([]int, lastFrame/framesPerBucket+1),
-		buckets:             make([]int, lastFrame/framesPerBucket+1),
-		renderstore:         make(renderindex, lastFrame+1), // pre-allocated
+func newChunkRenderer(lastFrame, framesPerChunk, compressionLvl int, outputDir string) *chunkRenderer {
+	god := chunkRenderer{
+		outputDir:          outputDir,
+		compressionLvl:     compressionLvl,
+		chunkSize:          framesPerChunk,
+		expectedChunkSizes: make([]int, lastFrame/framesPerChunk+1),
+		currentChunkSizes:  make([]int, lastFrame/framesPerChunk+1),
+		chunks:             make([]renderindex, lastFrame/framesPerChunk+1),
 
 		dumperWG: &sync.WaitGroup{},
 		sem:      make(chan *bytes.Buffer, 4),
@@ -80,8 +106,8 @@ func newGodOfBuckets(lastFrame, framesPerBucket, compressionLvl int) *godOfBucke
 	// determine the number of frames expected in each bucket.
 	// do it the dumb way for now
 	for frame := 0; frame <= lastFrame; frame++ {
-		bnum := frame / god.bucketSize
-		god.expectedBucketSizes[bnum]++
+		bnum := frame / god.chunkSize
+		god.expectedChunkSizes[bnum]++
 	}
 
 	// fill the semaphore with buffers for dumpers.
@@ -93,43 +119,31 @@ func newGodOfBuckets(lastFrame, framesPerBucket, compressionLvl int) *godOfBucke
 	return &god
 }
 
-func (god *godOfBuckets) finishedFrame(frame uint32, frameData map[uint32]renderbody) {
+func (god *chunkRenderer) finishedFrame(frame uint32, frameData framedata) {
 	// prevent race on buckets manipulation
 	god.m.Lock()
-	bnum := int(frame) / god.bucketSize
-	god.buckets[bnum]++
-	full := god.buckets[bnum] == god.expectedBucketSizes[bnum]
+	chunkNum := int(frame) / god.chunkSize
+	god.currentChunkSizes[chunkNum]++
+	full := god.currentChunkSizes[chunkNum] == god.expectedChunkSizes[chunkNum]
+
+	if god.chunks[chunkNum] == nil {
+		god.chunks[chunkNum] = make(renderindex, god.chunkSize)
+	}
+	god.chunks[chunkNum][frame] = frameData
 	god.m.Unlock()
 
-	// i think manipulating renderstore will not cause race condition
-	// since i preallocate memory (no need for it to reallocate itself)
-	// and only one goroutine will access a value (frame) at a time
-	god.renderstore[frame] = frameData
-
-	// allow metered file writing and keeping track of
-	// remaining "active" dumpers
+	// write full chunk to disk
 	if full {
-		// dump bucket
-		go god.dumper(bnum)
+		go god.dumper(chunkNum)
 	}
 }
 
-func (god *godOfBuckets) dumper(bucket int) {
+func (god *chunkRenderer) dumper(chunkNum int) {
 	god.dumperWG.Add(1)
 	buf := <-god.sem
+	_, h := framesForChunk(chunkNum, god.chunkSize) // indices to dump
 
-	// start := time.Now()
-
-	l, h := bucketToFrames(bucket, god.bucketSize) // indices to dump
-	dump := make(renderindex, god.bucketSize)
-	for i := l; i <= h; i++ {
-		// transfer subset of frames to "dump"
-		// to compressed gob file
-		dump[uint32(i)] = god.renderstore[uint32(i)]
-		delete(god.renderstore, uint32(i))
-	}
-
-	err := os.Mkdir("chunks", 0755)
+	os.Mkdir(god.outputDir, 0755) // ignore errors (such as the directory existing)
 
 	// write compressed data to buffer first,
 	// then to disk (is faster than directly to disk)
@@ -138,31 +152,29 @@ func (god *godOfBuckets) dumper(bucket int) {
 		panic(err)
 	}
 	enc := gob.NewEncoder(zw)
-	if err := enc.Encode(dump); err != nil {
+	if err := enc.Encode(god.chunks[chunkNum]); err != nil {
 		panic(err)
 	}
 	zw.Close()
-	err = ioutil.WriteFile(fmt.Sprintf("chunks/%010d.chunk", h), buf.Bytes(), 0644)
+	god.chunks[chunkNum] = nil // (hopefully) deallocated memory for this chunk
+
+	filename := filepath.Join(god.outputDir, fmt.Sprintf(chunkFilenameFormat, h))
+	err = ioutil.WriteFile(filename, buf.Bytes(), 0644)
 	if err != nil {
 		panic(err)
 	}
-
-	// debug status print
-	// size := buf.Len()
-	// bods := len(dump[uint32(l)])
-	// fmt.Printf("%s to dump bucket %d, %d bodies/frame, %d bytes, approx %d bytes per body\n", time.Since(start), bucket, bods, size, size/(bods*god.bucketSize))
 
 	buf.Reset() // reset len, keep cap
 	god.sem <- buf
 	god.dumperWG.Done()
 }
 
-func bucketToFrames(bucketNumber, bucketSize int) (lowIndex, highIndex int) {
+func framesForChunk(chunkNumber, chunkSize int) (lowIndex, highIndex int) {
 	// inclusive indicies
-	return bucketNumber * bucketSize, (bucketNumber+1)*bucketSize - 1
+	return chunkNumber * chunkSize, (chunkNumber+1)*chunkSize - 1
 }
 
-func idealBucketSize(numBodies int) int {
+func idealChunkSize(numBodies int) int {
 	const (
 		sizePerBody    = 24           // bytes
 		idealChunkSize = 32 * 1 << 20 // 32MB
@@ -173,14 +185,14 @@ func idealBucketSize(numBodies int) int {
 	return framesPerChunk + extra
 }
 
-func frameToMemory(god *godOfBuckets, wg *sync.WaitGroup, ch chan *frameJob) {
+func frameToMemory(god *chunkRenderer, wg *sync.WaitGroup, ch chan *frameJob) {
 	if god == nil {
 		panic("there is no god")
 	}
 
 	for job := range ch {
 		frame := uint32(job.Frame)
-		frameData := make(map[uint32]renderbody, len(job.Bodies))
+		frameData := make(framedata, len(job.Bodies))
 
 		for _, b := range job.Bodies {
 			frameData[uint32(b.ID)] = renderbody{
@@ -195,11 +207,24 @@ func frameToMemory(god *godOfBuckets, wg *sync.WaitGroup, ch chan *frameJob) {
 		god.finishedFrame(frame, frameData)
 	}
 
-	god.dumperWG.Wait() // for for all dumpers before continuing
+	god.dumperWG.Wait() // for all dumpers before continuing
 	wg.Done()
 }
 
-func readChunk(filename string) (renderindex, error) {
+// return low and high frame number included in the chunkData.
+func readChunkFromFrame(dir string, frameNumber int) (chunkData renderindex, low, high int, err error) {
+	size, err := determineChunkSizeFromFolder(dir)
+	if err != nil {
+		return
+	}
+	low, high = framesForChunk(frameNumber/size, size)
+	filename := filepath.Join(dir, fmt.Sprintf(chunkFilenameFormat, high))
+	chunkData, err = readChunkFromFilename(filename)
+	return
+}
+
+func readChunkFromFilename(filename string) (renderindex, error) {
+	// filename with path
 	file, err := os.Open(filename)
 	if err != nil {
 		return nil, err
@@ -218,4 +243,47 @@ func readChunk(filename string) (renderindex, error) {
 		return nil, err
 	}
 	return frameData, nil
+}
+
+// determineChunkSizeFromFolder scans dir for files matching "*.chunk"
+// and attempts to use the sequential numbering of the filenames to determine
+// the chunk size used for their generation.
+func determineChunkSizeFromFolder(dir string) (chunkSize int, err error) {
+	matches, err := filepath.Glob(filepath.Join(dir, "*.chunk"))
+	if err != nil {
+		return
+	}
+	switch n := len(matches); {
+	case n < 1:
+		return 0, fmt.Errorf("found %d chunk files in '%s'", n, dir)
+
+	case n < 2:
+		frames, err := filenamesToInts(matches[0])
+		if err != nil {
+			return 0, err
+		}
+		return frames[0] + 1, nil
+
+	default:
+		frames, err := filenamesToInts(matches[0], matches[1])
+		if err != nil {
+			return 0, err
+		}
+		return frames[1] - frames[0], nil
+	}
+}
+
+// cleans and converts to integers filenames whose name are integers.
+func filenamesToInts(files ...string) ([]int, error) {
+	frames := make([]int, 0, len(files))
+	for _, file := range files {
+		base := filepath.Base(file)
+		base = strings.TrimSuffix(base, filepath.Ext(base))
+		n, err := strconv.Atoi(base)
+		if err != nil {
+			return nil, err
+		}
+		frames = append(frames, n)
+	}
+	return frames, nil
 }
