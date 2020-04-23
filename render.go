@@ -8,6 +8,8 @@ import (
 	"image/png"
 	"math"
 	"os"
+	"path/filepath"
+	"sort"
 	"sync"
 
 	"github.com/go-gl/mathgl/mgl64"
@@ -25,6 +27,8 @@ image output section
 /*
 88 frames = 1.8mb disk used (for comparison against using DB or gob) (~35kb per image)
 */
+
+const filenameFormat = "%010d.png"
 
 type frameJob struct {
 	Frame  int
@@ -90,18 +94,15 @@ func fovFromRadiusBase(r, b float64) float64 { return 2 * math.Atan(0.5*b/r) }
 
 // frameToImages renders a frame into a PNG image. File name format is:
 //     img/FrameNumber.png
-func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
+func frameToImages(imgDir string, wg *sync.WaitGroup, ch chan *frameJob) {
 	const (
-		width               = 1920.0     // pixels
-		height              = 1080.0     // pixels
-		bgcolor             = 0          // [0,255]
-		sqrt3over3          = 0.57735027 // sqrt(3)/3, normalized {1,1,1}
-		fov                 = 15         // degrees
-		camRadiusFromOrigin = 0x1p15     // meters // 60e3
+		width               = 1920.0 // pixels
+		height              = 1080.0 // pixels
+		bgcolor             = 0      // [0,255]
+		fov                 = 15     // degrees
+		camRadiusFromOrigin = 0x1p15 // meters // 60e3
 		axisLength          = camRadiusFromOrigin / 10.0
 		simWidth            = 0x1p16 // meters
-		// scale = 5e9 // full solar system
-		// scale = 5e8 // inner solar system
 	)
 
 	// this values seems to be ok. "blows out" when object is <1000m from light source
@@ -142,7 +143,6 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 
 	// setup for rendering to "film"
 	film := image.NewRGBA(image.Rect(0, 0, width, height))
-	// bg := image.NewRGBA(image.Rect(0, 0, width, height))
 	zbuffer := make([]float64, width*height)
 
 	// func to redraw bg with correctly rotated axes
@@ -190,6 +190,12 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 		// 	return center.Sub(edge).Len()
 		// }
 
+		// TODO: remove this. just for getting recovered bodies in expected order!
+		// high-to-low mass
+		sort.Slice(job.Bodies, func(i, j int) bool {
+			return job.Bodies[i].Mass > job.Bodies[j].Mass
+		})
+
 		initZBuffer(zbuffer)
 		g0 := mgl64.Vec3{job.Bodies[0].X, job.Bodies[0].Y, job.Bodies[0].Z}
 		g1 := mgl64.Vec3{job.Bodies[1].X, job.Bodies[1].Y, job.Bodies[1].Z}
@@ -198,8 +204,7 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 		// move camera and create a view-projection matrix
 		angle := mgl64.DegToRad(float64(job.Frame)) / 4.0
 		camPos := mgl64.QuatRotate(-angle, camRotAxis).Rotate(startCamPos)
-		fov := fovFromRadiusBase(camPos.Sub(middle).Len(), g0.Sub(g1).Len()*1.5) //6.5e3)
-		// fov := mgl64.DegToRad(fov)
+		fov := fovFromRadiusBase(camPos.Sub(middle).Len(), g0.Sub(g1).Len()*1.5)
 		vp := makeViewProjMatrix(camPos, middle, fov)
 
 		// light at center of each galaxy
@@ -213,24 +218,16 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 			color:     mgl64.Vec3{0.9, 0.9, 0.5},
 			intensity: 0.075 * lightIntensity,
 		}
-		// lights[0] = light{
-		// 	pos:       mgl64.Vec3{job.Bodies[0].X, job.Bodies[0].Y, job.Bodies[0].Z},
-		// 	color:     mgl64.Vec3{0.9, 0.9, 0.6},
-		// 	intensity: 1 * lightIntensity,
-		// }
 
 		// directional light from camera position can be used to simulate "ambient light source"
-		// lights := []light{
 		lights[5] = light{
 			directional: true,
 			// pos:         mgl64.Vec3{0, 0, -1}, // light at infinite distance in -z of simulation
 			pos:   camPos.Normalize(),        // from camera
 			color: mgl64.Vec3{0.1, 0.1, 0.1}, // very dim 'ambient' illumination
 		}
-		// }
 
 		drawBG(vp)
-		// draw.Draw(film, film.Bounds(), bg, image.ZP, draw.Src) // fill film with background image
 		plotText(film, col(0), row(1), white, fmt.Sprintf("frame:  %d", job.Frame))
 		plotText(film, col(0), row(2), white, fmt.Sprintf("bodies: %d", len(job.Bodies)))
 		plotText(film, col(0), row(3), white, fmt.Sprintf("rot:    %.1f°", mgl64.RadToDeg(angle)))
@@ -249,7 +246,8 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 			plotpoint3d(film, zbuffer, col, vp, world)
 		}
 
-		file, err := os.Create(fmt.Sprintf("img/%010d.png", job.Frame))
+		filename := filepath.Join(imgDir, fmt.Sprint(filenameFormat, job.Frame))
+		file, err := os.Create(filename)
 		if err != nil {
 			panic(err)
 		}
@@ -260,8 +258,8 @@ func frameToImages(wg *sync.WaitGroup, ch chan *frameJob) {
 	wg.Done()
 }
 
-// lerp x to [0,1]
-func lerp(x, min, max float64) float64 {
+// invLerp x to [0,1]
+func invLerp(x, min, max float64) float64 {
 	return (x - min) / (max - min)
 }
 
@@ -430,7 +428,6 @@ func plotcircle(img draw.Image, c color.Color, x0, y0, r int) {
 
 // plotpoint3d draws a point at p
 func plotpoint3d(img draw.Image, zbuffer []float64, c color.Color, vp mgl64.Mat4, p mgl64.Vec3) {
-	// p = mgl64.TransformCoordinate(p, vp)
 	t := p.Vec4(1)
 	t = vp.Mul4x1(t)
 	if t[3] <= 0 {
@@ -450,8 +447,6 @@ func plotpoint3d(img draw.Image, zbuffer []float64, c color.Color, vp mgl64.Mat4
 
 // plotline3d draws a line from p1 to p2
 func plotline3d(img draw.Image, zbuffer []float64, c color.Color, vp mgl64.Mat4, p1, p2 mgl64.Vec3) {
-	// p1 = mgl64.TransformCoordinate(p1, vp)
-	// p2 = mgl64.TransformCoordinate(p2, vp)
 	t1 := p1.Vec4(1)
 	t1 = vp.Mul4x1(t1)
 	t2 := p2.Vec4(1)
@@ -533,7 +528,7 @@ func distInt(x0, y0, x1, y1 int) float64 {
 
 func clipWto0(behind, front *mgl64.Vec4) {
 	// t := (0.0 - behind[3]) / (front[3] - behind[3])
-	t := lerp(0, behind[3], front[3])
+	t := invLerp(0, behind[3], front[3])
 	behind[0] += t * (front[0] - behind[0])
 	behind[1] += t * (front[1] - behind[1])
 	behind[2] += t * (front[2] - behind[2])

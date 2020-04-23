@@ -51,13 +51,13 @@ func main() {
 	workers := 4
 	wg := sync.WaitGroup{}
 	wg.Add(workers)
-	// db := opendb("bodies.sqlite")
-	god := newGodOfBuckets(frames, idealBucketSize(*numbodies), 1) // default lvl is 6
-	fmt.Printf("bucket size: %d\ndisk usage@24B/body: %.2fGB\n", god.bucketSize, float64(frames*(*numbodies)*24)/0x1p30)
+	// db := opendb("bodies.sqlite") // don't forget db stuff at end
+	// god := newChunkRenderer(frames, idealChunkSize(*numbodies), 1, "chunks") // default lvl is 6
+	// fmt.Printf("bucket size: %d\ndisk usage@24B/body: %.2fGB\n", god.chunkSize, float64(frames*(*numbodies)*24)/0x1p30)
 	for i := 0; i < workers; i++ {
-		// go frameToImages(&wg, ch)
+		go frameToImages("img", &wg, ch)
 		// go frameToSqlite(db, &wg, ch)
-		go frameToMemory(god, &wg, ch)
+		// go frameToMemory(god, &wg, ch)
 	}
 
 	// print parameters
@@ -193,7 +193,6 @@ func main() {
 	wg.Wait()
 	// createIndices(db)
 	// db.Close()
-	// writeRenderStoreToDisk("allframes.gob")
 	fmt.Printf("\nDone. Took %s\n", time.Since(start).Truncate(time.Second))
 
 	// export final state of simulation
